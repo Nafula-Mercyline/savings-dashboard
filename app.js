@@ -5,11 +5,11 @@
  */
 
 const express = require("express");
-const cors    = require("cors");
-const helmet  = require("helmet");
-const morgan  = require("morgan");
-const fs      = require("fs");
-const path    = require("path");
+const cors = require("cors");
+const helmet = require("helmet");
+const morgan = require("morgan");
+const fs = require("fs");
+const path = require("path");
 
 const env = require("./api/config/env");
 
@@ -25,10 +25,10 @@ app.use(express.urlencoded({ extended: true }));
 // ─── Health Check ─────────────────────────────────────────────────────────────
 app.get("/api/health", (req, res) => {
   res.json({
-    success:   true,
-    status:    "ok",
-    app:       env.app.name,
-    version:   "1.0.0",
+    success: true,
+    status: "ok",
+    app: env.app.name,
+    version: "1.0.0",
     timestamp: new Date(),
   });
 });
@@ -49,14 +49,15 @@ function loadRoute(routeName, mountPath) {
 }
 
 // ─── Register all routes ──────────────────────────────────────────────────────
-loadRoute("dashboard",    "/api/dashboard");
-loadRoute("savings",      "/api/savings");
-loadRoute("loans",        "/api/loans");
-loadRoute("interest",     "/api/interest");
-loadRoute("members",      "/api/members");
+loadRoute("dashboard", "/api/dashboard");
+loadRoute("savings", "/api/savings");
+loadRoute("loans", "/api/loans");
+loadRoute("interest", "/api/interest");
+loadRoute("members", "/api/members");
 loadRoute("transactions", "/api/transactions");
-loadRoute("reports",      "/api/reports");
-loadRoute("settings",     "/api/settings");
+loadRoute("reports", "/api/reports");
+loadRoute("settings", "/api/settings");
+loadRoute("auth", "/api/auth");
 
 // ─── 404 Handler ──────────────────────────────────────────────────────────────
 app.use((req, res) => {

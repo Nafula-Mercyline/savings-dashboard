@@ -1,23 +1,29 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import settingsService from "@/lib/api/settingsService"; 
 
 import {
   Building2, Bell, Shield, Database, Percent,
   Users, Save, ChevronRight, Check, AlertTriangle,
   Eye, EyeOff, Upload, RefreshCw, Trash2, Plus,
-  Globe, Mail, Phone, MapPin, Hash, Calendar,Download
+  Globe, Mail, Phone, MapPin, Hash, Calendar, Download, Loader2
 } from "lucide-react";
 
 // ── Types ────────────────────────────────────────────────────
 type SectionId = "organisation" | "rates" | "notifications" | "security" | "users" | "data";
 
 // ── Sub-components ───────────────────────────────────────────
-function Toggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+function Toggle({ on, onToggle, disabled }: { on: boolean; onToggle: () => void; disabled?: boolean }) {
   return (
-    <button onClick={onToggle} aria-pressed={on}
-      className={`relative w-11 h-6 rounded-full transition-colors duration-200 focus:outline-none ${on ? "bg-amber-500" : "bg-gray-200"}`}>
+    <button 
+      onClick={onToggle} 
+      type="button"
+      aria-pressed={on}
+      disabled={disabled}
+      className={`relative w-11 h-6 rounded-full transition-colors duration-200 focus:outline-none ${on ? "bg-amber-500" : "bg-gray-200"} ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
+    >
       <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${on ? "translate-x-5" : "translate-x-0"}`} />
     </button>
   );
@@ -27,7 +33,7 @@ function FormField({ label, icon: Icon, children }: { label: string; icon?: any;
   return (
     <div>
       <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">{label}</label>
-      <div className={`relative ${Icon ? "" : ""}`}>
+      <div className="relative">
         {Icon && <Icon size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />}
         <div className={Icon ? "[&>input]:pl-9 [&>select]:pl-9" : ""}>{children}</div>
       </div>
@@ -35,56 +41,125 @@ function FormField({ label, icon: Icon, children }: { label: string; icon?: any;
   );
 }
 
-const inputCls = "w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-800 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100 transition placeholder-gray-400";
-const selectCls = "w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-800 outline-none focus:border-amber-400 transition";
+const inputCls = "w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-800 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100 transition placeholder-gray-400 disabled:opacity-60";
+const selectCls = "w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-800 outline-none focus:border-amber-400 transition disabled:opacity-60";
 
 // ── Page ─────────────────────────────────────────────────────
 export default function SettingsPage() {
   const [active, setActive] = useState<SectionId>("organisation");
-  const [saved, setSaved] = useState(false);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [saving, setSaving] = useState<boolean>(false);
+  const [saved, setSaved] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // notification toggles
-  const [notifs, setNotifs] = useState({
-    loanOverdue:      true,
-    newMember:        true,
-    largeWithdrawal:  false,
-    monthlyReport:    true,
-    failedTxn:        true,
-    dailySummary:     false,
-    loanApproval:     true,
-    memberBirthday:   false,
+  // Consolidated Form State matching API fields
+  const [orgSettings, setOrgSettings] = useState({
+    name: "Kampala Savings & Credit Co-op",
+    registrationNumber: "SACCO-UG-20180042",
+    email: "admin@kampala-sacco.ug",
+    phone: "+256 414 000 000",
+    website: "https://kampala-sacco.ug",
+    address: "Plot 14, Kampala Road, Kampala",
+    financialYearEnd: "December 31",
+    currency: "UGX — Ugandan Shilling",
+    minShareCapital: "50000",
+    maxLoanMultiplier: "3",
+    loanProcessingFee: "1.5"
   });
 
-  // interest rates
+  const [notifs, setNotifs] = useState({
+    loanOverdue: true,
+    newMember: true,
+    largeWithdrawal: false,
+    monthlyReport: true,
+    failedTxn: true,
+    dailySummary: false,
+    loanApproval: true,
+    memberBirthday: false,
+    notifyEmail: "admin@kampala-sacco.ug",
+    notifyPhone: "+256 414 000 000"
+  });
+
   const [rates, setRates] = useState({
     regularSavings: "5.0", fixedDeposit: "9.0",
     holidaySavings: "4.0", juniorSavings: "3.0",
-    personalLoan:  "18.0", businessLoan: "15.5",
+    personalLoan: "18.0", businessLoan: "15.5",
     emergencyLoan: "12.0", educationLoan: "10.0",
+  });
+
+  const [securitySettings, setSecuritySettings] = useState({
+    sessionTimeout: "1 hour",
+    maxFailedLogins: "5",
+    ipAllowlist: ""
   });
 
   const [showPass, setShowPass] = useState(false);
 
-  const handleSave = () => {
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
+  // Fetch settings parameters dynamically on mount
+  useEffect(() => {
+    async function loadData() {
+      try {
+        setLoading(true);
+        setError(null);
+        
+        const [allData, publicData, financialData] = await Promise.all([
+          settingsService.getAllSettings("all"),
+          settingsService.getPublicSettings(),
+          settingsService.getFinancialSettings()
+        ]);
+
+        if (allData) {
+          if (allData.organisation) setOrgSettings(prev => ({ ...prev, ...allData.organisation }));
+          if (allData.rates) setRates(prev => ({ ...prev, ...allData.rates }));
+          if (allData.notifications) setNotifs(prev => ({ ...prev, ...allData.notifications }));
+          if (allData.security) setSecuritySettings(prev => ({ ...prev, ...allData.security }));
+        }
+      } catch (err: any) {
+        setError(err?.message || "Failed to download system configurations.");
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadData();
+  }, []);
+
+  // Centralized Mutation Handler
+  const handleSave = async () => {
+    try {
+      setSaving(true);
+      setError(null);
+
+      const updates = {
+        organisation: orgSettings,
+        rates,
+        notifications: notifs,
+        security: securitySettings
+      };
+
+      await settingsService.updateSettings(updates);
+      
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (err: any) {
+      setError(err?.message || "Changes could not be updated successfully.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const navSections = [
-    { id: "organisation" as SectionId, icon: Building2, label: "Organisation",       desc: "Name, address & currency" },
-    { id: "rates"        as SectionId, icon: Percent,   label: "Interest Rates",     desc: "Savings & loan rates" },
-    { id: "notifications"as SectionId, icon: Bell,      label: "Notifications",      desc: "Alerts & email preferences" },
+    { id: "organisation" as SectionId, icon: Building2, label: "Organisation",      desc: "Name, address & currency" },
+    { id: "rates"        as SectionId, icon: Percent,   label: "Interest Rates",      desc: "Savings & loan rates" },
+    { id: "notifications" as SectionId, icon: Bell,      label: "Notifications",      desc: "Alerts & email preferences" },
     { id: "security"     as SectionId, icon: Shield,    label: "Security & Access",  desc: "Passwords, 2FA & sessions" },
     { id: "users"        as SectionId, icon: Users,     label: "Users & Roles",      desc: "Staff accounts & permissions" },
     { id: "data"         as SectionId, icon: Database,  label: "Data & Backup",      desc: "Backup schedule & exports" },
   ];
 
-  // ── Section content ──────────────────────────────────────
+  // ── Section content views ──────────────────────────────────
   const sectionContent: Record<SectionId, React.ReactNode> = {
-
     organisation: (
       <div className="space-y-6">
-        {/* Logo upload */}
         <div className="flex items-center gap-5 p-4 bg-gray-50 rounded-2xl border border-gray-200">
           <div className="w-16 h-16 rounded-2xl bg-amber-100 border-2 border-amber-200 flex items-center justify-center text-amber-600 font-bold text-xl flex-shrink-0">
             KSC
@@ -92,7 +167,7 @@ export default function SettingsPage() {
           <div>
             <p className="text-sm font-semibold text-gray-700">Organisation Logo</p>
             <p className="text-xs text-gray-400 mt-0.5">PNG or JPG, max 2MB. Appears on reports and receipts.</p>
-            <button className="mt-2 flex items-center gap-1.5 text-xs font-medium text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200 hover:bg-amber-100 transition-colors">
+            <button type="button" className="mt-2 flex items-center gap-1.5 text-xs font-medium text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200 hover:bg-amber-100 transition-colors">
               <Upload size={12} /> Upload Logo
             </button>
           </div>
@@ -100,25 +175,25 @@ export default function SettingsPage() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           <FormField label="Organisation Name" icon={Building2}>
-            <input className={inputCls} defaultValue="Kampala Savings & Credit Co-op" />
+            <input className={inputCls} value={orgSettings.name} onChange={e => setOrgSettings({ ...orgSettings, name: e.target.value })} />
           </FormField>
           <FormField label="Registration Number" icon={Hash}>
-            <input className={inputCls} defaultValue="SACCO-UG-20180042" />
+            <input className={inputCls} value={orgSettings.registrationNumber} onChange={e => setOrgSettings({ ...orgSettings, registrationNumber: e.target.value })} />
           </FormField>
           <FormField label="Email Address" icon={Mail}>
-            <input className={inputCls} type="email" defaultValue="admin@kampala-sacco.ug" />
+            <input className={inputCls} type="email" value={orgSettings.email} onChange={e => setOrgSettings({ ...orgSettings, email: e.target.value })} />
           </FormField>
           <FormField label="Phone Number" icon={Phone}>
-            <input className={inputCls} type="tel" defaultValue="+256 414 000 000" />
+            <input className={inputCls} type="tel" value={orgSettings.phone} onChange={e => setOrgSettings({ ...orgSettings, phone: e.target.value })} />
           </FormField>
           <FormField label="Website" icon={Globe}>
-            <input className={inputCls} type="url" defaultValue="https://kampala-sacco.ug" />
+            <input className={inputCls} type="url" value={orgSettings.website} onChange={e => setOrgSettings({ ...orgSettings, website: e.target.value })} />
           </FormField>
           <FormField label="Physical Address" icon={MapPin}>
-            <input className={inputCls} defaultValue="Plot 14, Kampala Road, Kampala" />
+            <input className={inputCls} value={orgSettings.address} onChange={e => setOrgSettings({ ...orgSettings, address: e.target.value })} />
           </FormField>
           <FormField label="Financial Year End" icon={Calendar}>
-            <select className={selectCls}>
+            <select className={selectCls} value={orgSettings.financialYearEnd} onChange={e => setOrgSettings({ ...orgSettings, financialYearEnd: e.target.value })}>
               <option>December 31</option>
               <option>March 31</option>
               <option>June 30</option>
@@ -126,7 +201,7 @@ export default function SettingsPage() {
             </select>
           </FormField>
           <FormField label="Currency">
-            <select className={selectCls}>
+            <select className={selectCls} value={orgSettings.currency} onChange={e => setOrgSettings({ ...orgSettings, currency: e.target.value })}>
               <option>UGX — Ugandan Shilling</option>
               <option>USD — US Dollar</option>
               <option>KES — Kenyan Shilling</option>
@@ -137,13 +212,13 @@ export default function SettingsPage() {
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
           <FormField label="Minimum Share Capital (UGX)">
-            <input className={inputCls} type="number" defaultValue="50000" />
+            <input className={inputCls} type="number" value={orgSettings.minShareCapital} onChange={e => setOrgSettings({ ...orgSettings, minShareCapital: e.target.value })} />
           </FormField>
           <FormField label="Maximum Loan Multiplier">
-            <input className={inputCls} type="number" defaultValue="3" />
+            <input className={inputCls} type="number" value={orgSettings.maxLoanMultiplier} onChange={e => setOrgSettings({ ...orgSettings, maxLoanMultiplier: e.target.value })} />
           </FormField>
           <FormField label="Loan Processing Fee (%)">
-            <input className={inputCls} type="number" step="0.1" defaultValue="1.5" />
+            <input className={inputCls} type="number" step="0.1" value={orgSettings.loanProcessingFee} onChange={e => setOrgSettings({ ...orgSettings, loanProcessingFee: e.target.value })} />
           </FormField>
         </div>
       </div>
@@ -151,7 +226,6 @@ export default function SettingsPage() {
 
     rates: (
       <div className="space-y-8">
-        {/* Savings */}
         <div>
           <div className="flex items-center gap-2 mb-4">
             <span className="w-1 h-5 bg-amber-400 rounded-full" />
@@ -180,7 +254,6 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* Loans */}
         <div>
           <div className="flex items-center gap-2 mb-4">
             <span className="w-1 h-5 bg-blue-400 rounded-full" />
@@ -221,7 +294,7 @@ export default function SettingsPage() {
     notifications: (
       <div className="space-y-1">
         {[
-          { key: "loanOverdue"     as const, label: "Loan Overdue Alerts",       desc: "Notify when a repayment is more than 3 days past due",         badge: "Critical" },
+          { key: "loanOverdue"     as const, label: "Loan Overdue Alerts",      desc: "Notify when a repayment is more than 3 days past due",        badge: "Critical" },
           { key: "failedTxn"       as const, label: "Failed Transaction Alerts",  desc: "Alert on every failed or reversed transaction",                badge: "Critical" },
           { key: "newMember"       as const, label: "New Member Registration",    desc: "Notify when a new member application is submitted",            badge: null },
           { key: "loanApproval"    as const, label: "Loan Approval Required",     desc: "Alert when a loan application is awaiting approval",           badge: null },
@@ -248,10 +321,10 @@ export default function SettingsPage() {
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Notification Delivery</p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <FormField label="Notify Email">
-              <input className={inputCls} type="email" defaultValue="admin@kampala-sacco.ug" />
+              <input className={inputCls} type="email" value={notifs.notifyEmail} onChange={e => setNotifs({ ...notifs, notifyEmail: e.target.value })} />
             </FormField>
             <FormField label="Notify Phone (SMS)">
-              <input className={inputCls} type="tel" defaultValue="+256 414 000 000" />
+              <input className={inputCls} type="tel" value={notifs.notifyPhone} onChange={e => setNotifs({ ...notifs, notifyPhone: e.target.value })} />
             </FormField>
           </div>
         </div>
@@ -260,14 +333,13 @@ export default function SettingsPage() {
 
     security: (
       <div className="space-y-6">
-        {/* Change password */}
         <div>
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-4">Change Password</p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <FormField label="Current Password">
               <div className="relative">
                 <input className={inputCls} type={showPass ? "text" : "password"} placeholder="••••••••" />
-                <button onClick={() => setShowPass(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                <button type="button" onClick={() => setShowPass(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
                   {showPass ? <EyeOff size={15} /> : <Eye size={15} />}
                 </button>
               </div>
@@ -281,7 +353,6 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* 2FA */}
         <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center justify-between">
           <div className="flex items-start gap-3">
             <Shield size={18} className="text-emerald-600 flex-shrink-0 mt-0.5" />
@@ -295,33 +366,31 @@ export default function SettingsPage() {
           </span>
         </div>
 
-        {/* Session & access */}
         <div>
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-4">Session & Access Controls</p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <FormField label="Session Timeout">
-              <select className={selectCls}>
+              <select className={selectCls} value={securitySettings.sessionTimeout} onChange={e => setSecuritySettings({ ...securitySettings, sessionTimeout: e.target.value })}>
                 <option>15 minutes</option>
                 <option>30 minutes</option>
-                <option selected>1 hour</option>
+                <option>1 hour</option>
                 <option>4 hours</option>
               </select>
             </FormField>
             <FormField label="Max Failed Login Attempts">
-              <input className={inputCls} type="number" defaultValue="5" />
+              <input className={inputCls} type="number" value={securitySettings.maxFailedLogins} onChange={e => setSecuritySettings({ ...securitySettings, maxFailedLogins: e.target.value })} />
             </FormField>
             <FormField label="IP Allowlist (optional)">
-              <input className={inputCls} placeholder="e.g. 192.168.1.0/24" />
+              <input className={inputCls} placeholder="e.g. 192.168.1.0/24" value={securitySettings.ipAllowlist} onChange={e => setSecuritySettings({ ...securitySettings, ipAllowlist: e.target.value })} />
             </FormField>
           </div>
         </div>
 
-        {/* Audit log */}
         <div>
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Recent Admin Activity</p>
           <div className="space-y-2">
             {[
-              { action: "Login",             user: "James Doe",   time: "Today 09:14",       ip: "197.220.14.8" },
+              { action: "Login",             user: "James Doe",   time: "Today 09:14",    ip: "197.220.14.8" },
               { action: "Rate Updated",      user: "James Doe",   time: "Yesterday 16:30",   ip: "197.220.14.8" },
               { action: "Report Downloaded", user: "Sarah Kato",  time: "Dec 28, 11:05",     ip: "41.210.8.92" },
               { action: "Member Suspended",  user: "James Doe",   time: "Dec 27, 14:22",     ip: "197.220.14.8" },
@@ -347,7 +416,7 @@ export default function SettingsPage() {
       <div className="space-y-5">
         <div className="flex items-center justify-between">
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Staff Accounts</p>
-          <button className="flex items-center gap-1.5 text-xs font-medium text-white bg-amber-500 px-3 py-1.5 rounded-lg hover:bg-amber-600 transition-colors">
+          <button type="button" className="flex items-center gap-1.5 text-xs font-medium text-white bg-amber-500 px-3 py-1.5 rounded-lg hover:bg-amber-600 transition-colors">
             <Plus size={13} /> Add User
           </button>
         </div>
@@ -380,10 +449,10 @@ export default function SettingsPage() {
                       ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
                       : "bg-gray-100 text-gray-400 border border-gray-200"
                   }`}>{u.status}</span>
-                  <button className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-200 rounded-lg transition-colors">
+                  <button type="button" className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-200 rounded-lg transition-colors">
                     <RefreshCw size={13} />
                   </button>
-                  <button className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors">
+                  <button type="button" className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors">
                     <Trash2 size={13} />
                   </button>
                 </div>
@@ -392,7 +461,6 @@ export default function SettingsPage() {
           })}
         </div>
 
-        {/* Role permissions matrix */}
         <div>
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Role Permissions</p>
           <div className="overflow-x-auto rounded-2xl border border-gray-100">
@@ -435,10 +503,9 @@ export default function SettingsPage() {
 
     data: (
       <div className="space-y-6">
-        {/* Backup status cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {[
-            { label: "Last Backup",       value: "Jan 1, 2025",   sub: "02:00 AM",   color: "text-emerald-600", bg: "bg-emerald-50", border: "border-emerald-100" },
+            { label: "Last Backup",       value: "Jan 1, 2025",   sub: "02:00 AM",  color: "text-emerald-600", bg: "bg-emerald-50", border: "border-emerald-100" },
             { label: "Backup Frequency",  value: "Daily",         sub: "at 2:00 AM", color: "text-blue-600",    bg: "bg-blue-50",    border: "border-blue-100" },
             { label: "Storage Location",  value: "AWS S3",        sub: "af-south-1", color: "text-violet-600",  bg: "bg-violet-50",  border: "border-violet-100" },
             { label: "Retention Period",  value: "90 days",       sub: "auto-delete",color: "text-amber-600",   bg: "bg-amber-50",   border: "border-amber-100" },
@@ -451,7 +518,6 @@ export default function SettingsPage() {
           ))}
         </div>
 
-        {/* Backup history */}
         <div>
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Recent Backups</p>
           <div className="space-y-2">
@@ -459,7 +525,7 @@ export default function SettingsPage() {
               { date: "Jan 1, 2025 — 02:00 AM",  size: "48.2 MB", status: "Success" },
               { date: "Dec 31, 2024 — 02:00 AM", size: "47.8 MB", status: "Success" },
               { date: "Dec 30, 2024 — 02:00 AM", size: "47.6 MB", status: "Success" },
-              { date: "Dec 29, 2024 — 02:00 AM", size: "—",       status: "Failed"  },
+              { date: "Dec 29, 2024 — 02:00 AM", size: "—",        status: "Failed"  },
               { date: "Dec 28, 2024 — 02:00 AM", size: "47.1 MB", status: "Success" },
             ].map((b, i) => (
               <div key={i} className="flex items-center justify-between px-4 py-3 bg-gray-50 rounded-xl border border-gray-100">
@@ -475,7 +541,11 @@ export default function SettingsPage() {
                       : "bg-red-50 text-red-600 border border-red-200"
                   }`}>{b.status}</span>
                   {b.status === "Success" && (
-                    <button className="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1">
+                    <button 
+                      type="button"
+                      onClick={() => settingsService.resetSetting("backup-restore-key")}
+                      className="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1"
+                    >
                       <Download size={12} /> Restore
                     </button>
                   )}
@@ -485,16 +555,15 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* Export & actions */}
         <div>
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Data Export</p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             {[
-              { label: "Export Members CSV",    desc: "All member records"       },
+              { label: "Export Members CSV",    desc: "All member records"        },
               { label: "Export Transactions",   desc: "Full ledger as Excel"     },
               { label: "Export Loan Register",  desc: "All loans as CSV"         },
             ].map((ex) => (
-              <button key={ex.label} className="flex items-center gap-3 p-4 bg-gray-50 border border-gray-200 rounded-2xl hover:bg-gray-100 hover:border-gray-300 transition-colors text-left">
+              <button key={ex.label} type="button" className="flex items-center gap-3 p-4 bg-gray-50 border border-gray-200 rounded-2xl hover:bg-gray-100 hover:border-gray-300 transition-colors text-left">
                 <Download size={16} className="text-gray-400 flex-shrink-0" />
                 <div>
                   <p className="text-sm font-semibold text-gray-700">{ex.label}</p>
@@ -510,7 +579,7 @@ export default function SettingsPage() {
           <div>
             <p className="text-sm font-semibold text-red-700">Danger Zone</p>
             <p className="text-xs text-red-500 mt-0.5 mb-3">These actions are irreversible. Please proceed with caution.</p>
-            <button className="flex items-center gap-1.5 text-xs font-medium text-red-600 bg-white border border-red-200 px-3 py-1.5 rounded-lg hover:bg-red-50 transition-colors">
+            <button type="button" className="flex items-center gap-1.5 text-xs font-medium text-red-600 bg-white border border-red-200 px-3 py-1.5 rounded-lg hover:bg-red-50 transition-colors">
               <Trash2 size={12} /> Purge Archived Data
             </button>
           </div>
@@ -521,69 +590,92 @@ export default function SettingsPage() {
 
   const activeSection = navSections.find(s => s.id === active)!;
 
-  return (
-    <div className="min-h-screen bg-gray-50/60 p-6">
-
-      {/* ── Page header ── */}
-      <div className="mb-6">
-        <div className="flex items-center gap-2 text-xs text-gray-400 font-medium tracking-widest uppercase mb-1">
-          <Building2 size={13} />
-          <span>System Configuration</span>
+  if (loading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-gray-50">
+        <div className="flex flex-col items-center gap-2">
+          <Loader2 className="h-8 w-8 animate-spin text-amber-500" />
+          <p className="text-sm font-medium text-gray-500">Loading configurations...</p>
         </div>
-        <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Settings</h1>
-        <p className="text-sm text-gray-500 mt-1">Manage your SACCO system preferences and configuration</p>
       </div>
+    );
+  }
 
-      <div className="flex gap-6 items-start">
-
-        {/* ── Sidebar nav ── */}
-        <div className="w-60 flex-shrink-0 space-y-1">
-          {navSections.map((s) => (
-            <button key={s.id} onClick={() => setActive(s.id)}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-left transition-all ${
-                active === s.id
-                  ? "bg-amber-50 border border-amber-200 shadow-sm"
-                  : "hover:bg-gray-100 border border-transparent"
-              }`}>
-              <div className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 ${
-                active === s.id ? "bg-amber-100 text-amber-600" : "bg-gray-100 text-gray-400"
-              }`}>
-                <s.icon size={16} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className={`text-sm font-semibold truncate ${active === s.id ? "text-amber-700" : "text-gray-700"}`}>{s.label}</p>
-                <p className="text-xs text-gray-400 truncate">{s.desc}</p>
-              </div>
-              <ChevronRight size={14} className={`flex-shrink-0 ${active === s.id ? "text-amber-400" : "text-gray-300"}`} />
-            </button>
-          ))}
+  return (
+    <div className="min-h-screen bg-gray-50/50 p-4 md:p-8 max-w-7xl mx-auto">
+      {/* Top Bar notifications and alerts */}
+      {error && (
+        <div className="mb-6 p-4 bg-red-50 border border-red-200 text-red-700 text-sm rounded-2xl flex items-center gap-3">
+          <AlertTriangle size={18} className="flex-shrink-0" />
+          <span>{error}</span>
         </div>
+      )}
 
-        {/* ── Main content ── */}
-        <div className="flex-1 min-w-0">
-          <Card className="border border-gray-100 shadow-sm">
-            <CardHeader className="pb-0 border-b border-gray-100">
-              <div className="flex items-center justify-between pb-5">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-amber-50 border border-amber-100 flex items-center justify-center text-amber-600">
-                    <activeSection.icon size={18} />
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+        {/* Navigation Sidebar */}
+        <div className="lg:col-span-4 space-y-2">
+          <div className="px-3 mb-4">
+            <h1 className="text-xl font-bold text-gray-800">System Settings</h1>
+            <p className="text-xs text-gray-400 mt-0.5">Manage dashboard rules, interest rates, and access access levels.</p>
+          </div>
+          {navSections.map((sec) => {
+            const Icon = sec.icon;
+            const isSelected = active === sec.id;
+            return (
+              <button
+                key={sec.id}
+                type="button"
+                onClick={() => setActive(sec.id)}
+                className={`w-full flex items-center justify-between p-3.5 rounded-2xl text-left transition border ${
+                  isSelected 
+                    ? "bg-white border-gray-200 shadow-sm ring-1 ring-black/5" 
+                    : "border-transparent hover:bg-gray-100 text-gray-500"
+                }`}
+              >
+                <div className="flex items-center gap-3.5">
+                  <div className={`p-2 rounded-xl transition ${isSelected ? "bg-amber-500 text-white" : "bg-gray-100 text-gray-400"}`}>
+                    <Icon size={18} />
                   </div>
                   <div>
-                    <CardTitle className="text-base font-bold text-gray-800">{activeSection.label}</CardTitle>
-                    <p className="text-xs text-gray-400 mt-0.5">{activeSection.desc}</p>
+                    <p className={`text-sm font-semibold ${isSelected ? "text-gray-800" : "text-gray-600"}`}>{sec.label}</p>
+                    <p className="text-xs text-gray-400 mt-0.5 font-normal leading-none">{sec.desc}</p>
                   </div>
                 </div>
-                <button onClick={handleSave}
-                  className={`flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-xl transition-all ${
-                    saved
-                      ? "bg-emerald-500 text-white"
-                      : "bg-amber-500 text-white hover:bg-amber-600 shadow-sm hover:shadow-md"
-                  }`}>
-                  {saved ? <><Check size={15} /> Saved!</> : <><Save size={15} /> Save Changes</>}
-                </button>
+                <ChevronRight size={16} className={`text-gray-300 transition-transform ${isSelected ? "translate-x-0.5 text-gray-400" : ""}`} />
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Content Area */}
+        <div className="lg:col-span-8">
+          <Card className="border border-gray-200/80 shadow-sm rounded-3xl overflow-hidden bg-white">
+            <CardHeader className="border-b border-gray-100 px-6 py-5 flex flex-row items-center justify-between space-y-0">
+              <div>
+                <CardTitle className="text-base font-bold text-gray-800">{activeSection.label}</CardTitle>
+                <p className="text-xs text-gray-400 mt-0.5 font-normal">{activeSection.desc}</p>
               </div>
+              
+              {/* Show safe buttons only for dynamic mutation sheets */}
+              {["organisation", "rates", "notifications", "security"].includes(active) && (
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={saving}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-gray-900 text-white font-medium text-xs rounded-xl hover:bg-gray-800 transition disabled:opacity-50"
+                >
+                  {saving ? (
+                    <Loader2 size={13} className="animate-spin" />
+                  ) : saved ? (
+                    <Check size={13} className="text-emerald-400" />
+                  ) : (
+                    <Save size={13} />
+                  )}
+                  {saving ? "Saving..." : saved ? "Saved!" : "Save Changes"}
+                </button>
+              )}
             </CardHeader>
-            <CardContent className="pt-6">
+            <CardContent className="p-6">
               {sectionContent[active]}
             </CardContent>
           </Card>

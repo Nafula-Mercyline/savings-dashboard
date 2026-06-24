@@ -9,11 +9,16 @@ const queryClient = new QueryClient();
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
-      <body className="flex bg-gray-50">
+    <html lang="en" className="bg-zinc-950 text-zinc-100 antialiased">
+      <body className="flex min-h-screen bg-zinc-900 selection:bg-amber-500/30">
         <QueryClientProvider client={queryClient}>
+          {/* Sidebar container */}
           <Sidebar />
-          <main className="flex-1 p-6">{children}</main>
+
+          {/* Main Content Area */}
+          <main className="flex-1 min-h-screen p-6 md:p-8 overflow-y-auto">
+            {children}
+          </main>
         </QueryClientProvider>
       </body>
     </html>

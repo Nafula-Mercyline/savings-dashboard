@@ -1,391 +1,426 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, LineChart, Line } from "recharts";
 import {
-    ResponsiveContainer, AreaChart, Area, BarChart, Bar,
-    XAxis, YAxis, Tooltip, CartesianGrid, LineChart, Line
-} from "recharts";
-import {
-    TrendingUp, TrendingDown, Percent, Calculator,
-    Download, ChevronUp, ChevronDown, AlertCircle, CheckCircle
+  TrendingUp,
+  TrendingDown,
+  Percent,
+  Calculator,
+  Download,
+  ChevronUp,
+  ChevronDown,
+  AlertCircle,
+  CheckCircle,
 } from "lucide-react";
+import { collectPendingInterest, exportInterestReport, getInterestDashboard } from "@/lib/api/interestService";
 
-// ── Mock data ────────────────────────────────────────────────
-const fetchInterest = async () => ({
-    stats: {
-        totalEarned: { value: 48_300_000, change: +7.1, up: true },
-        totalPaid: { value: 12_600_000, change: +7.3, up: false },
-        netIncome: { value: 35_700_000, change: +7.0, up: true },
-        nim: { value: 3.82, change: +0.18, up: true },
-    },
-    monthly: [
-        { month: "Jan", earned: 2_820_000, paid: 840_000, net: 1_980_000 },
-        { month: "Feb", earned: 3_100_000, paid: 910_000, net: 2_190_000 },
-        { month: "Mar", earned: 3_340_000, paid: 980_000, net: 2_360_000 },
-        { month: "Apr", earned: 3_780_000, paid: 1_050_000, net: 2_730_000 },
-        { month: "May", earned: 4_020_000, paid: 1_110_000, net: 2_910_000 },
-        { month: "Jun", earned: 4_450_000, paid: 1_220_000, net: 3_230_000 },
-        { month: "Jul", earned: 4_820_000, paid: 1_240_000, net: 3_580_000 },
-        { month: "Aug", earned: 5_100_000, paid: 1_310_000, net: 3_790_000 },
-        { month: "Sep", earned: 5_340_000, paid: 1_380_000, net: 3_960_000 },
-        { month: "Oct", earned: 5_780_000, paid: 1_450_000, net: 4_330_000 },
-        { month: "Nov", earned: 6_020_000, paid: 1_510_000, net: 4_510_000 },
-        { month: "Dec", earned: 6_450_000, paid: 1_620_000, net: 4_830_000 },
-    ],
-    products: [
-        { name: "Personal Loans", rate: 18.0, balance: 28_500_000, monthly: 427_500, type: "income", color: "#c9a84c" },
-        { name: "Business Loans", rate: 15.5, balance: 59_000_000, monthly: 762_083, type: "income", color: "#3ecf8e" },
-        { name: "Emergency Loans", rate: 12.0, balance: 4_800_000, monthly: 48_000, type: "income", color: "#63b3ed" },
-        { name: "Education Loans", rate: 10.0, balance: 8_000_000, monthly: 66_667, type: "income", color: "#a78bfa" },
-        { name: "Regular Savings", rate: 5.0, balance: 18_200_000, monthly: 75_833, type: "expense", color: "#fb923c" },
-        { name: "Fixed Deposits", rate: 9.0, balance: 42_000_000, monthly: 315_000, type: "expense", color: "#f56565" },
-        { name: "Holiday Savings", rate: 4.0, balance: 7_800_000, monthly: 26_000, type: "expense", color: "#34d399" },
-        { name: "Junior Savings", rate: 3.0, balance: 2_100_000, monthly: 5_250, type: "expense", color: "#f472b6" },
-    ],
-    pending: [
-        { member: "Brian Okello", product: "Business Loan", amount: 762_083, dueDate: "2025-01-15", status: "Due Soon" },
-        { member: "Carol Nambi", product: "Emergency Loan", amount: 48_000, dueDate: "2024-12-31", status: "Overdue" },
-        { member: "Frank Mugisha", product: "Business Loan", amount: 316_667, dueDate: "2025-01-08", status: "Overdue" },
-        { member: "Eva Tumwine", product: "Education Loan", amount: 66_667, dueDate: "2025-02-05", status: "Due Soon" },
-        { member: "Alice Nakamura", product: "Personal Loan", amount: 75_000, dueDate: "2025-01-20", status: "Due Soon" },
-    ],
-});
-
-// ── Helpers ──────────────────────────────────────────────────
-const fmt = (n: number) =>
-    n >= 1_000_000
-        ? `UGX ${(n / 1_000_000).toFixed(2)}M`
-        : `UGX ${n.toLocaleString()}`;
-
-const fmtShort = (n: number) =>
-    n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n.toLocaleString();
-
-const INITIALS_COLORS = ["#c9a84c", "#3ecf8e", "#63b3ed", "#f56565", "#a78bfa", "#fb923c"];
-
-const CustomTooltip = ({ active, payload, label }: any) => {
-    if (!active || !payload?.length) return null;
-    return (
-        <div className="bg-white border border-gray-100 rounded-xl shadow-xl p-3 text-sm">
-            <p className="font-semibold text-gray-700 mb-2">{label}</p>
-            {payload.map((p: any) => (
-                <div key={p.name} className="flex items-center gap-2 text-gray-600">
-                    <span className="w-2 h-2 rounded-full" style={{ background: p.color }} />
-                    <span className="capitalize">{p.name}:</span>
-                    <span className="font-semibold">UGX {fmtShort(p.value)}</span>
-                </div>
-            ))}
-        </div>
-    );
+type InterestMetric = { value: number; change: number; up: boolean };
+type MonthlyInterest = { month: string; earned: number; paid: number; net: number };
+type InterestProduct = {
+  name: string;
+  rate: number;
+  balance: number;
+  monthly: number;
+  type: "income" | "expense";
+  color: string;
+};
+type PendingInterest = {
+  id?: string;
+  member: string;
+  product: string;
+  amount: number;
+  dueDate: string;
+  status: "Due Soon" | "Overdue" | string;
 };
 
-// ── Page ─────────────────────────────────────────────────────
-export default function InterestSummaryPage() {
-    const { data, isLoading } = useQuery({ queryKey: ["interest"], queryFn: fetchInterest });
+type InterestDashboardData = {
+  stats: {
+    totalEarned: InterestMetric;
+    totalPaid: InterestMetric;
+    netIncome: InterestMetric;
+    nim: InterestMetric;
+  };
+  monthly: MonthlyInterest[];
+  products: InterestProduct[];
+  pending: PendingInterest[];
+};
 
-    if (isLoading || !data) {
-        return (
-            <div className="flex items-center justify-center h-64">
-                <div className="flex flex-col items-center gap-3">
-                    <div className="w-8 h-8 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
-                    <p className="text-sm text-gray-400 font-medium">Loading interest data…</p>
-                </div>
-            </div>
-        );
-    }
+const emptyInterestDashboard: InterestDashboardData = {
+  stats: {
+    totalEarned: { value: 0, change: 0, up: true },
+    totalPaid: { value: 0, change: 0, up: false },
+    netIncome: { value: 0, change: 0, up: true },
+    nim: { value: 0, change: 0, up: true },
+  },
+  monthly: [],
+  products: [],
+  pending: [],
+};
 
-    const { stats, monthly, products, pending } = data;
-    const incomeProducts = products.filter(p => p.type === "income");
-    const expenseProducts = products.filter(p => p.type === "expense");
-    const totalIncome = incomeProducts.reduce((s, p) => s + p.monthly, 0);
-    const totalExpense = expenseProducts.reduce((s, p) => s + p.monthly, 0);
+const INITIALS_COLORS = ["#c9a84c", "#10b981", "#3b82f6", "#ef4444", "#8b5cf6", "#f97316"];
 
-    return (
-        <div className="min-h-screen bg-gray-50/60 p-6 space-y-6">
+const fmt = (amount = 0) =>
+  amount >= 1_000_000 ? `UGX ${(amount / 1_000_000).toFixed(2)}M` : `UGX ${amount.toLocaleString()}`;
 
-            {/* ── Page header ── */}
-            <div className="flex items-start justify-between">
-                <div>
-                    <div className="flex items-center gap-2 text-xs text-gray-400 font-medium tracking-widest uppercase mb-1">
-                        <Percent size={13} />
-                        <span>Interest Management</span>
-                    </div>
-                    <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Interest Summary</h1>
-                    <p className="text-sm text-gray-500 mt-1">
-                        Fiscal Year 2024 · Updated {new Date().toLocaleDateString("en-UG", { day: "numeric", month: "long", year: "numeric" })}
-                    </p>
-                </div>
-                <button className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors shadow-sm">
-                    <Download size={15} /> Export Report
-                </button>
-            </div>
+const fmtShort = (amount = 0) => (amount >= 1_000_000 ? `${(amount / 1_000_000).toFixed(1)}M` : amount.toLocaleString());
 
-            {/* ── KPI Cards ── */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-                {[
-                    { label: "Total Interest Earned", value: fmt(stats.totalEarned.value), change: stats.totalEarned.change, up: stats.totalEarned.up, icon: TrendingUp, accent: "bg-amber-50 text-amber-600", border: "border-amber-100" },
-                    { label: "Total Interest Paid", value: fmt(stats.totalPaid.value), change: stats.totalPaid.change, up: false, icon: TrendingDown, accent: "bg-red-50 text-red-500", border: "border-red-100" },
-                    { label: "Net Interest Income", value: fmt(stats.netIncome.value), change: stats.netIncome.change, up: stats.netIncome.up, icon: Calculator, accent: "bg-emerald-50 text-emerald-600", border: "border-emerald-100" },
-                    { label: "Net Interest Margin", value: `${stats.nim.value}%`, change: stats.nim.change, up: stats.nim.up, icon: Percent, accent: "bg-violet-50 text-violet-600", border: "border-violet-100" },
-                ].map((s) => (
-                    <Card key={s.label} className={`border ${s.border} shadow-sm hover:shadow-md transition-shadow`}>
-                        <CardContent className="p-5">
-                            <div className="flex items-start justify-between">
-                                <div className={`p-2.5 rounded-xl ${s.accent}`}>
-                                    <s.icon size={18} />
-                                </div>
-                                <span className={`flex items-center gap-0.5 text-xs font-semibold px-2 py-1 rounded-full ${s.up ? "bg-emerald-50 text-emerald-600" : "bg-red-50 text-red-500"
-                                    }`}>
-                                    {s.up ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                                    {Math.abs(s.change)}%
-                                </span>
-                            </div>
-                            <div className="mt-4">
-                                <p className="text-xs text-gray-400 font-medium tracking-wide uppercase">{s.label}</p>
-                                <p className="text-xl font-bold text-gray-900 mt-1 font-mono">{s.value}</p>
-                                <p className="text-xs text-gray-400 mt-1">vs. previous month</p>
-                            </div>
-                        </CardContent>
-                    </Card>
-                ))}
-            </div>
+function getInitials(name = "") {
+  return name
+    .split(" ")
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+}
 
-            {/* ── Trend Charts ── */}
-            <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+const CustomTooltip = ({ active, payload, label }: any) => {
+  if (!active || !payload?.length) return null;
 
-                {/* Area chart — earned vs paid vs net */}
-                <Card className="xl:col-span-2 border border-gray-100 shadow-sm">
-                    <CardHeader className="pb-2">
-                        <div className="flex items-center justify-between">
-                            <div>
-                                <CardTitle className="text-base font-semibold text-gray-800">Interest Trend — 2024</CardTitle>
-                                <p className="text-xs text-gray-400 mt-0.5">Earned, paid, and net interest income monthly</p>
-                            </div>
-                            <div className="flex gap-4 text-xs text-gray-500">
-                                <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 bg-amber-400 rounded inline-block" />Earned</span>
-                                <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 bg-red-400 rounded inline-block" />Paid</span>
-                                <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 bg-emerald-400 rounded inline-block" />Net</span>
-                            </div>
-                        </div>
-                    </CardHeader>
-                    <CardContent>
-                        <ResponsiveContainer width="100%" height={260}>
-                            <AreaChart data={monthly} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
-                                <defs>
-                                    {[
-                                        { id: "earnedGrad", color: "#f59e0b" },
-                                        { id: "paidGrad", color: "#f56565" },
-                                        { id: "netGrad", color: "#3ecf8e" },
-                                    ].map(g => (
-                                        <linearGradient key={g.id} id={g.id} x1="0" y1="0" x2="0" y2="1">
-                                            <stop offset="5%" stopColor={g.color} stopOpacity={0.15} />
-                                            <stop offset="95%" stopColor={g.color} stopOpacity={0} />
-                                        </linearGradient>
-                                    ))}
-                                </defs>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
-                                <XAxis dataKey="month" tick={{ fontSize: 12, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
-                                <YAxis tickFormatter={fmtShort} tick={{ fontSize: 11, fill: "#9ca3af" }} axisLine={false} tickLine={false} width={55} />
-                                <Tooltip content={<CustomTooltip />} />
-                                <Area type="monotone" dataKey="earned" stroke="#f59e0b" strokeWidth={2} fill="url(#earnedGrad)" dot={false} activeDot={{ r: 5 }} />
-                                <Area type="monotone" dataKey="paid" stroke="#f56565" strokeWidth={2} fill="url(#paidGrad)" dot={false} activeDot={{ r: 5 }} />
-                                <Area type="monotone" dataKey="net" stroke="#3ecf8e" strokeWidth={2} fill="url(#netGrad)" dot={false} activeDot={{ r: 5 }} />
-                            </AreaChart>
-                        </ResponsiveContainer>
-                    </CardContent>
-                </Card>
-
-                {/* This month summary panel */}
-                <Card className="border border-gray-100 shadow-sm">
-                    <CardHeader className="pb-2">
-                        <CardTitle className="text-base font-semibold text-gray-800">December 2024</CardTitle>
-                        <p className="text-xs text-gray-400">Monthly interest breakdown</p>
-                    </CardHeader>
-                    <CardContent className="space-y-3">
-                        {[
-                            { label: "Gross Interest Earned", value: monthly[11].earned, color: "text-amber-600", bg: "bg-amber-50", icon: TrendingUp },
-                            { label: "Interest Paid Out", value: monthly[11].paid, color: "text-red-500", bg: "bg-red-50", icon: TrendingDown },
-                            { label: "Net Interest Income", value: monthly[11].net, color: "text-emerald-600", bg: "bg-emerald-50", icon: Calculator },
-                        ].map((item) => (
-                            <div key={item.label} className={`flex items-center justify-between p-3 ${item.bg} rounded-xl`}>
-                                <div className="flex items-center gap-2">
-                                    <item.icon size={15} className={item.color} />
-                                    <span className="text-xs font-medium text-gray-600">{item.label}</span>
-                                </div>
-                                <span className={`text-sm font-bold font-mono ${item.color}`}>{fmt(item.value)}</span>
-                            </div>
-                        ))}
-
-                        <div className="pt-2 border-t border-gray-100">
-                            <p className="text-xs text-gray-400 uppercase tracking-wide font-medium mb-3">NIM Trend (6 months)</p>
-                            <ResponsiveContainer width="100%" height={70}>
-                                <LineChart data={monthly.slice(-6)} margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
-                                    <Line type="monotone" dataKey="net" stroke="#c9a84c" strokeWidth={2} dot={false} />
-                                    <XAxis dataKey="month" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
-                                    <Tooltip formatter={(v: any) => [`UGX ${fmtShort(v)}`, "Net"]} contentStyle={{ fontSize: 11, borderRadius: 8 }} />
-                                </LineChart>
-                            </ResponsiveContainer>
-                        </div>
-                    </CardContent>
-                </Card>
-            </div>
-
-            {/* ── Income vs Expense Products ── */}
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-
-                {/* Income — loans */}
-                <Card className="border border-gray-100 shadow-sm">
-                    <CardHeader className="pb-2">
-                        <div className="flex items-center justify-between">
-                            <div>
-                                <CardTitle className="text-base font-semibold text-gray-800">Interest Income</CardTitle>
-                                <p className="text-xs text-gray-400 mt-0.5">From loan products · UGX {fmtShort(totalIncome)} / month</p>
-                            </div>
-                            <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-100">
-                                Income
-                            </span>
-                        </div>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                        {incomeProducts.map((p) => {
-                            const pct = Math.round((p.monthly / totalIncome) * 100);
-                            return (
-                                <div key={p.name}>
-                                    <div className="flex items-center justify-between mb-1.5">
-                                        <div className="flex items-center gap-2">
-                                            <span className="w-2.5 h-2.5 rounded-full" style={{ background: p.color }} />
-                                            <span className="text-sm font-medium text-gray-700">{p.name}</span>
-                                            <span className="text-xs text-gray-400">@ {p.rate}%</span>
-                                        </div>
-                                        <div className="text-right">
-                                            <span className="text-xs font-mono font-semibold text-gray-800">{fmt(p.monthly)}/mo</span>
-                                        </div>
-                                    </div>
-                                    <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                                        <div className="h-full rounded-full" style={{ width: `${pct}%`, background: p.color }} />
-                                    </div>
-                                    <p className="text-xs text-gray-400 mt-1">Balance: {fmt(p.balance)}</p>
-                                </div>
-                            );
-                        })}
-                    </CardContent>
-                </Card>
-
-                {/* Expense — savings */}
-                <Card className="border border-gray-100 shadow-sm">
-                    <CardHeader className="pb-2">
-                        <div className="flex items-center justify-between">
-                            <div>
-                                <CardTitle className="text-base font-semibold text-gray-800">Interest Expense</CardTitle>
-                                <p className="text-xs text-gray-400 mt-0.5">On savings products · UGX {fmtShort(totalExpense)} / month</p>
-                            </div>
-                            <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-red-50 text-red-500 border border-red-100">
-                                Expense
-                            </span>
-                        </div>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                        {expenseProducts.map((p) => {
-                            const pct = Math.round((p.monthly / totalExpense) * 100);
-                            return (
-                                <div key={p.name}>
-                                    <div className="flex items-center justify-between mb-1.5">
-                                        <div className="flex items-center gap-2">
-                                            <span className="w-2.5 h-2.5 rounded-full" style={{ background: p.color }} />
-                                            <span className="text-sm font-medium text-gray-700">{p.name}</span>
-                                            <span className="text-xs text-gray-400">@ {p.rate}%</span>
-                                        </div>
-                                        <span className="text-xs font-mono font-semibold text-gray-800">{fmt(p.monthly)}/mo</span>
-                                    </div>
-                                    <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                                        <div className="h-full rounded-full" style={{ width: `${pct}%`, background: p.color }} />
-                                    </div>
-                                    <p className="text-xs text-gray-400 mt-1">Balance: {fmt(p.balance)}</p>
-                                </div>
-                            );
-                        })}
-                    </CardContent>
-                </Card>
-            </div>
-
-            {/* ── Pending Interest Table ── */}
-            <Card className="border border-gray-100 shadow-sm">
-                <CardHeader className="pb-0">
-                    <div className="flex items-center justify-between">
-                        <div>
-                            <CardTitle className="text-base font-semibold text-gray-800">Pending Interest Collections</CardTitle>
-                            <p className="text-xs text-gray-400 mt-0.5">{pending.length} accounts with interest due</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <span className="flex items-center gap-1.5 text-xs text-red-500 font-medium bg-red-50 px-3 py-1.5 rounded-lg border border-red-100">
-                                <AlertCircle size={13} /> 2 overdue
-                            </span>
-                            <span className="flex items-center gap-1.5 text-xs text-amber-600 font-medium bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-100">
-                                <AlertCircle size={13} /> 3 due soon
-                            </span>
-                        </div>
-                    </div>
-                </CardHeader>
-                <CardContent className="pt-4 px-0">
-                    <table className="w-full text-sm">
-                        <thead>
-                            <tr className="border-b border-gray-100">
-                                {["Member", "Product", "Interest Due", "Due Date", "Status", ""].map((h) => (
-                                    <th key={h} className="text-left text-xs font-semibold text-gray-400 uppercase tracking-wider pb-3 px-6">{h}</th>
-                                ))}
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-50">
-                            {pending.map((p, i) => {
-                                const initials = p.member.split(" ").map((n) => n[0]).join("").slice(0, 2);
-                                const color = INITIALS_COLORS[i % INITIALS_COLORS.length];
-                                const isOverdue = p.status === "Overdue";
-                                return (
-                                    <tr key={i} className="hover:bg-gray-50/70 transition-colors group">
-                                        <td className="py-3.5 px-6">
-                                            <div className="flex items-center gap-3">
-                                                <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
-                                                    style={{ background: color + "22", color, border: `1.5px solid ${color}40` }}>
-                                                    {initials}
-                                                </div>
-                                                <span className="font-medium text-gray-800">{p.member}</span>
-                                            </div>
-                                        </td>
-                                        <td className="py-3.5 px-6 text-gray-600">{p.product}</td>
-                                        <td className="py-3.5 px-6">
-                                            <span className="font-mono font-semibold text-gray-900">{fmt(p.amount)}</span>
-                                        </td>
-                                        <td className="py-3.5 px-6">
-                                            <span className={`text-sm ${isOverdue ? "text-red-500 font-semibold" : "text-gray-500"}`}>
-                                                {p.dueDate}
-                                            </span>
-                                        </td>
-                                        <td className="py-3.5 px-6">
-                                            <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${isOverdue
-                                                    ? "bg-red-50 text-red-600 border border-red-200"
-                                                    : "bg-amber-50 text-amber-700 border border-amber-200"
-                                                }`}>
-                                                {isOverdue
-                                                    ? <><span className="inline-block w-1.5 h-1.5 rounded-full bg-red-500 mr-1.5" />{p.status}</>
-                                                    : <><span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 mr-1.5" />{p.status}</>
-                                                }
-                                            </span>
-                                        </td>
-                                        <td className="py-3.5 px-6">
-                                            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                <button className="flex items-center gap-1 text-xs font-medium text-emerald-600 bg-emerald-50 px-2.5 py-1.5 rounded-lg hover:bg-emerald-100 transition-colors border border-emerald-100">
-                                                    <CheckCircle size={12} /> Collect
-                                                </button>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                );
-                            })}
-                        </tbody>
-                    </table>
-                </CardContent>
-            </Card>
-
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950 p-3 text-sm shadow-xl backdrop-blur-md">
+      <p className="mb-2 font-semibold text-slate-200">{label}</p>
+      {payload.map((item: any) => (
+        <div key={item.name} className="flex items-center gap-2 text-slate-400">
+          <span className="h-2 w-2 rounded-full" style={{ background: item.color }} />
+          <span className="capitalize">{item.name}:</span>
+          <span className="font-semibold text-slate-200">UGX {fmtShort(item.value)}</span>
         </div>
+      ))}
+    </div>
+  );
+};
+
+export default function InterestSummaryPage() {
+  const queryClient = useQueryClient();
+  const [collectingId, setCollectingId] = useState<string | null>(null);
+  const year = "2024";
+
+  const { data, error, isFetching, isLoading } = useQuery<InterestDashboardData>({
+    queryKey: ["interest-dashboard", year],
+    queryFn: () => getInterestDashboard({ year }),
+    staleTime: 60_000,
+  });
+
+  const dashboard = data ?? emptyInterestDashboard;
+  const { stats, monthly, products, pending } = dashboard;
+
+  const incomeProducts = useMemo(() => products.filter((product) => product.type === "income"), [products]);
+  const expenseProducts = useMemo(() => products.filter((product) => product.type === "expense"), [products]);
+  const totalIncome = incomeProducts.reduce((sum, product) => sum + product.monthly, 0);
+  const totalExpense = expenseProducts.reduce((sum, product) => sum + product.monthly, 0);
+  const currentMonth = monthly[monthly.length - 1] ?? { month: "N/A", earned: 0, paid: 0, net: 0 };
+  const overdueCount = pending.filter((item) => item.status === "Overdue").length;
+  const dueSoonCount = pending.filter((item) => item.status === "Due Soon").length;
+
+  const handleExport = () => {
+    exportInterestReport({ format: "csv", year });
+  };
+
+  const handleCollect = async (item: PendingInterest) => {
+    if (!item.id) return;
+
+    try {
+      setCollectingId(item.id);
+      await collectPendingInterest(item.id);
+      await queryClient.invalidateQueries({ queryKey: ["interest-dashboard", year] });
+    } finally {
+      setCollectingId(null);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-slate-950">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-emerald-500 border-t-transparent" />
+          <p className="text-sm font-medium text-slate-400">Loading SACCO interest registers…</p>
+        </div>
+      </div>
     );
+  }
+
+  return (
+    <div className="min-h-screen space-y-6 bg-slate-950 p-6 text-slate-100">
+      {/* Header section */}
+      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+        <div>
+          <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-emerald-500">
+            <Percent size={13} />
+            <span>SACCO Treasury & Portfolio</span>
+          </div>
+          <h1 className="text-2xl font-bold tracking-tight text-white">Interest Summary Ledger</h1>
+          <p className="mt-1 text-sm text-slate-400">
+            Fiscal Year {year} · Updated {new Date().toLocaleDateString("en-UG", { day: "numeric", month: "long", year: "numeric" })}
+            {isFetching ? " · Synchronizing changes…" : ""}
+          </p>
+        </div>
+        <button 
+          onClick={handleExport} 
+          className="flex items-center justify-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-4 py-2.5 text-sm font-medium text-slate-300 shadow-sm transition-colors hover:bg-slate-800 hover:text-white"
+        >
+          <Download size={15} /> Export Audit Report
+        </button>
+      </div>
+
+      {error ? (
+        <div className="rounded-xl border border-red-900/50 bg-red-950/40 p-4 text-sm text-red-400 backdrop-blur-sm">
+          Failed to load interest accounting registers: {(error as Error).message}
+        </div>
+      ) : null}
+
+      {/* Top Cards Grid */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {[
+          { label: "Total Portfolio Interest Earned", value: fmt(stats.totalEarned.value), change: stats.totalEarned.change, up: stats.totalEarned.up, icon: TrendingUp, accent: "bg-emerald-500/10 text-emerald-400", border: "border-emerald-500/20" },
+          { label: "Total Savings Interest Paid", value: fmt(stats.totalPaid.value), change: stats.totalPaid.change, up: stats.totalPaid.up, icon: TrendingDown, accent: "bg-rose-500/10 text-rose-400", border: "border-rose-500/20" },
+          { label: "Net Interest Income (NII)", value: fmt(stats.netIncome.value), change: stats.netIncome.change, up: stats.netIncome.up, icon: Calculator, accent: "bg-amber-500/10 text-amber-400", border: "border-amber-500/20" },
+          { label: "Net Interest Margin (NIM)", value: `${stats.nim.value}%`, change: stats.nim.change, up: stats.nim.up, icon: Percent, accent: "bg-blue-500/10 text-blue-400", border: "border-blue-500/20" },
+        ].map((item) => (
+          <Card key={item.label} className={`border ${item.border} bg-slate-900 shadow-sm transition-all hover:border-slate-700`}>
+            <CardContent className="p-5">
+              <div className="flex items-start justify-between">
+                <div className={`rounded-xl p-2.5 ${item.accent}`}>
+                  <item.icon size={18} />
+                </div>
+                <span className={`flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs font-semibold ${item.up ? "bg-emerald-500/10 text-emerald-400" : "bg-rose-500/10 text-rose-400"}`}>
+                  {item.up ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                  {Math.abs(item.change)}%
+                </span>
+              </div>
+              <div className="mt-4">
+                <p className="text-xs font-medium uppercase tracking-wider text-slate-400">{item.label}</p>
+                <p className="mt-1 font-mono text-xl font-bold text-white tracking-tight">{item.value}</p>
+                <p className="mt-1 text-xs text-slate-500">vs. previous month cycle</p>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      {/* Analytics Trends section */}
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+        <Card className="border border-slate-800 bg-slate-900 shadow-sm xl:col-span-2">
+          <CardHeader className="pb-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <CardTitle className="text-base font-semibold text-slate-200">SACCO Performance Trajectory — {year}</CardTitle>
+                <p className="mt-0.5 text-xs text-slate-400">Monthly breakdown of gross vs net cash flows</p>
+              </div>
+              <div className="flex gap-4 text-xs font-medium text-slate-400">
+                <span className="flex items-center gap-1.5"><span className="inline-block h-1.5 w-3 rounded-full bg-emerald-500" />Earned</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block h-1.5 w-3 rounded-full bg-rose-500" />Paid</span>
+                <span className="flex items-center gap-1.5"><span className="inline-block h-1.5 w-3 rounded-full bg-amber-500" />Net</span>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={260}>
+              <AreaChart data={monthly} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
+                <defs>
+                  {[
+                    { id: "earnedGrad", color: "#10b981" },
+                    { id: "paidGrad", color: "#f43f5e" },
+                    { id: "netGrad", color: "#f59e0b" },
+                  ].map((gradient) => (
+                    <linearGradient key={gradient.id} id={gradient.id} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor={gradient.color} stopOpacity={0.12} />
+                      <stop offset="95%" stopColor={gradient.color} stopOpacity={0} />
+                    </linearGradient>
+                  ))}
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                <XAxis dataKey="month" tick={{ fontSize: 12, fill: "#64748b" }} axisLine={false} tickLine={false} />
+                <YAxis tickFormatter={fmtShort} tick={{ fontSize: 11, fill: "#64748b" }} axisLine={false} tickLine={false} width={55} />
+                <Tooltip content={<CustomTooltip />} />
+                <Area type="monotone" dataKey="earned" stroke="#10b981" strokeWidth={2} fill="url(#earnedGrad)" dot={false} activeDot={{ r: 5 }} />
+                <Area type="monotone" dataKey="paid" stroke="#f43f5e" strokeWidth={2} fill="url(#paidGrad)" dot={false} activeDot={{ r: 5 }} />
+                <Area type="monotone" dataKey="net" stroke="#f59e0b" strokeWidth={2} fill="url(#netGrad)" dot={false} activeDot={{ r: 5 }} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+
+        {/* Breakdown Card */}
+        <Card className="border border-slate-800 bg-slate-900 shadow-sm">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base font-semibold text-slate-200">{currentMonth.month} {year} Closeout</CardTitle>
+            <p className="text-xs text-slate-400">Statement period balances</p>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {[
+              { label: "Gross Interest Earned", value: currentMonth.earned, color: "text-emerald-400", bg: "bg-emerald-500/5 border border-emerald-500/10", icon: TrendingUp },
+              { label: "Interest Paid to Depositors", value: currentMonth.paid, color: "text-rose-400", bg: "bg-rose-500/5 border border-rose-500/10", icon: TrendingDown },
+              { label: "Retained Treasury Net", value: currentMonth.net, color: "text-amber-400", bg: "bg-amber-500/5 border border-amber-500/10", icon: Calculator },
+            ].map((item) => (
+              <div key={item.label} className={`flex items-center justify-between rounded-xl p-3 ${item.bg}`}>
+                <div className="flex items-center gap-2">
+                  <item.icon size={15} className={item.color} />
+                  <span className="text-xs font-medium text-slate-300">{item.label}</span>
+                </div>
+                <span className={`font-mono text-sm font-bold ${item.color}`}>{fmt(item.value)}</span>
+              </div>
+            ))}
+
+            <div className="border-t border-slate-800 pt-3">
+              <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">6-Month Margin Directional Delta</p>
+              <ResponsiveContainer width="100%" height={70}>
+                <LineChart data={monthly.slice(-6)} margin={{ top: 5, right: 5, bottom: 0, left: 5 }}>
+                  <Line type="monotone" dataKey="net" stroke="#c9a84c" strokeWidth={2} dot={false} />
+                  <XAxis dataKey="month" tick={{ fontSize: 10, fill: "#475569" }} axisLine={false} tickLine={false} />
+                  <Tooltip formatter={(value: any) => [`UGX ${fmtShort(value)}`, "Net Portfolio Yield"]} contentStyle={{ fontSize: 11, background: '#0f172a', border: '1px solid #334155', borderRadius: 8, color: '#f8fafc' }} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Allocations & Product performance split */}
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <Card className="border border-slate-800 bg-slate-900 shadow-sm">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="text-base font-semibold text-slate-200">Asset Yield (Loan Income)</CardTitle>
+                <p className="mt-0.5 text-xs text-slate-400">Yield across lending books · UGX {fmtShort(totalIncome)} / mo</p>
+              </div>
+              <span className="rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-400">Credit In</span>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {incomeProducts.map((product) => {
+              const pct = totalIncome > 0 ? Math.round((product.monthly / totalIncome) * 100) : 0;
+              return (
+                <div key={product.name}>
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="h-2 w-2 rounded-full" style={{ background: product.color }} />
+                      <span className="text-sm font-medium text-slate-300">{product.name}</span>
+                      <span className="font-mono text-xs text-slate-500">({product.rate}%)</span>
+                    </div>
+                    <span className="font-mono text-xs font-semibold text-slate-200">{fmt(product.monthly)}/mo</span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-slate-800">
+                    <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: product.color }} />
+                  </div>
+                  <p className="mt-1 font-mono text-[11px] text-slate-500">Outstanding Book Value: {fmt(product.balance)}</p>
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
+
+        <Card className="border border-slate-800 bg-slate-900 shadow-sm">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="text-base font-semibold text-slate-200">Liability Expenses (Dividends & Dividends Due)</CardTitle>
+                <p className="mt-0.5 text-xs text-slate-400">Cost of retail capitalization · UGX {fmtShort(totalExpense)} / mo</p>
+              </div>
+              <span className="rounded-full bg-rose-500/10 px-2.5 py-1 text-xs font-semibold text-rose-400">Capital Out</span>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {expenseProducts.map((product) => {
+              const pct = totalExpense > 0 ? Math.round((product.monthly / totalExpense) * 100) : 0;
+              return (
+                <div key={product.name}>
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="h-2 w-2 rounded-full" style={{ background: product.color }} />
+                      <span className="text-sm font-medium text-slate-300">{product.name}</span>
+                      <span className="font-mono text-xs text-slate-500">({product.rate}%)</span>
+                    </div>
+                    <span className="font-mono text-xs font-semibold text-slate-200">{fmt(product.monthly)}/mo</span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-slate-800">
+                    <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: product.color }} />
+                  </div>
+                  <p className="mt-1 font-mono text-[11px] text-slate-500">Aggregate Liquidity Base: {fmt(product.balance)}</p>
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Collections Ledger / Table */}
+      <Card className="border border-slate-800 bg-slate-900 shadow-sm">
+        <CardHeader className="pb-4">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <CardTitle className="text-base font-semibold text-slate-200">Pending Institutional Interest Inflows</CardTitle>
+              <p className="mt-0.5 text-xs text-slate-400">{pending.length} verified clearing entries pending ledger settlement</p>
+            </div>
+            <div className="flex items-center gap-2 self-start sm:self-auto">
+              <span className="flex items-center gap-1.5 rounded-lg bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-400">
+                <AlertCircle size={13} /> {overdueCount} Overdue Aging
+              </span>
+              <span className="flex items-center gap-1.5 rounded-lg bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-400">
+                <AlertCircle size={13} /> {dueSoonCount} Nearing Maturity
+              </span>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="px-0 pt-0 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-y border-slate-800 bg-slate-950/40 text-slate-400">
+                {["Shareholder / Member", "Loan Asset Class", "Unrealized Interest", "Maturity Target", "Aging Status", "Actions"].map((heading) => (
+                  <th key={heading} className="px-6 py-3.5 text-left text-xs font-semibold uppercase tracking-wider">{heading}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/60">
+              {pending.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="py-12 text-center text-sm text-slate-500">No open pending collections found in this ledger period.</td>
+                </tr>
+              ) : (
+                pending.map((item, index) => {
+                  const color = INITIALS_COLORS[index % INITIALS_COLORS.length];
+                  const isOverdue = item.status === "Overdue";
+                  return (
+                    <tr key={item.id ?? `${item.member}-${item.product}-${index}`} className="group transition-colors hover:bg-slate-850/40">
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold" style={{ background: `${color}15`, color, border: `1px solid ${color}30` }}>
+                            {getInitials(item.member)}
+                          </div>
+                          <span className="font-medium text-slate-200">{item.member}</span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 text-slate-300">{item.product}</td>
+                      <td className="px-6 py-4"><span className="font-mono font-semibold text-white">{fmt(item.amount)}</span></td>
+                      <td className="px-6 py-4"><span className={`text-sm font-mono ${isOverdue ? "font-semibold text-rose-400" : "text-slate-400"}`}>{item.dueDate}</span></td>
+                      <td className="px-6 py-4">
+                        <span className={`inline-flex items-center whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-medium border ${isOverdue ? "border-rose-900/30 bg-rose-500/5 text-rose-400" : "border-amber-900/30 bg-amber-500/5 text-amber-400"}`}>
+                          <span className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${isOverdue ? "bg-rose-500" : "bg-amber-500"}`} />
+                          {item.status}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex gap-1 md:opacity-0 transition-opacity group-hover:opacity-100">
+                          <button
+                            disabled={!item.id || collectingId === item.id}
+                            onClick={() => handleCollect(item)}
+                            className="flex items-center gap-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-3 py-1.5 text-xs font-medium text-emerald-400 transition-all hover:bg-emerald-500 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-30"
+                          >
+                            <CheckCircle size={12} /> {collectingId === item.id ? "Posting Entry…" : "Reconcile"}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+    </div>
+  );
 }
