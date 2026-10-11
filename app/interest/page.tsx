@@ -3,16 +3,20 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
-import { Percent, TrendingUp, CalendarDays, CreditCard, Pencil, Plus, X, Download, Trash2, CheckCircle, AlertTriangle } from "lucide-react";
+import { Percent, TrendingUp, CalendarDays, CreditCard, Pencil, Plus, X, Download, Trash2, CheckCircle, AlertTriangle, UserPlus } from "lucide-react";
 import {
   computeDashboard,
   cycleYears,
   loadData,
   money,
   monthLabel,
+  monthRange,
   saveData,
   setMonthEntries,
+  uid,
+  upsertMember,
   type Dashboard,
+  type Member,
   type SaccoData,
 } from "@/lib/saccoData";
 
@@ -42,7 +46,7 @@ const fmtShares = (n: number) => (Number.isInteger(n) ? money(n) : n.toFixed(1))
 const ratePct = (r: number) => `${+(r * 100).toFixed(2)}%`;
 const num = (s: string) => (s.trim() === "" ? 0 : Number(s.replace(/,/g, "")));
 
-type ModalState = { kind: "interest"; month: string | null } | null;
+type ModalState = { kind: "interest"; month: string | null } | { kind: "member"; id: string | null } | null;
 
 /* ------------------------------------------------------------------ */
 /*  Small building blocks                                              */
@@ -161,6 +165,123 @@ function InterestForm({
       ) : null}
       <p className="text-[10px] text-slate-500">The interest is shared between members by the shares they hold.</p>
       <FormActions onClose={onClose} error={err} label="Save interest" />
+    </form>
+  );
+}
+
+// Add a member, or change one member's name, opening balance and the shares bought each month.
+// The interest a member gets is worked out from their shares, so it is shown live as a preview.
+function MemberSharesForm({
+  data,
+  dash,
+  memberId,
+  onSave,
+  onClose,
+}: {
+  data: SaccoData;
+  dash: Dashboard;
+  memberId: string | null;
+  onSave: (member: Member, shares: Record<string, number>) => void;
+  onClose: () => void;
+}) {
+  const initial = memberId ? data.members.find((m) => m.id === memberId) ?? null : null;
+  const [name, setName] = useState(initial?.name ?? "");
+  const [opening, setOpening] = useState(String(initial?.opening ?? data.settings.openingBalance));
+  const [entries, setEntries] = useState<Record<string, string>>(() =>
+    Object.fromEntries(Object.entries(initial ? data.savings[initial.id] ?? {} : {}).map(([m, v]) => [m, String(v)]))
+  );
+  const [err, setErr] = useState("");
+
+  const months = useMemo(() => {
+    const own = Object.keys(initial ? data.savings[initial.id] ?? {} : {});
+    return Array.from(new Set([...dash.monthOptions, ...own])).sort();
+  }, [data, dash.monthOptions, initial]);
+
+  const parsed = useMemo(() => {
+    const out: Record<string, number> = {};
+    let bad = false;
+    for (const m of months) {
+      const v = num(entries[m] ?? "");
+      if (!Number.isFinite(v) || v < 0) bad = true;
+      else if (v > 0) out[m] = v;
+    }
+    return { out, bad };
+  }, [entries, months]);
+
+  const totalShares = Object.values(parsed.out).reduce((a, b) => a + b, 0);
+
+  // What this member would get, and what everyone else's share becomes, with these shares.
+  const preview = useMemo(() => {
+    if (parsed.bad) return null;
+    const id = initial?.id ?? "__new";
+    const me: Member = { id, name: name || "New member", opening: Math.round(num(opening)) || 0, joined: initial?.joined ?? null, phone: initial?.phone ?? "" };
+    const members = initial ? data.members.map((m) => (m.id === id ? me : m)) : [...data.members, me];
+    const next: SaccoData = { ...data, members, savings: { ...data.savings, [id]: parsed.out } };
+    return computeDashboard(next, "all").members.find((m) => m.id === id) ?? null;
+  }, [data, initial, name, opening, parsed]);
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    const clean = name.split(/\s+/).filter(Boolean).join(" ");
+    const o = num(opening);
+    if (!clean) return setErr("Enter the member's name.");
+    if (data.members.some((m) => m.id !== initial?.id && m.name.toLowerCase() === clean.toLowerCase())) return setErr("A member with this name already exists.");
+    if (!Number.isFinite(o) || o < 0) return setErr("Opening balance must be 0 or more.");
+    if (parsed.bad) return setErr("Shares must be 0 or more in every month.");
+    onSave(
+      { id: initial?.id ?? uid("m"), name: clean, opening: Math.round(o), joined: initial?.joined ?? null, phone: initial?.phone ?? "" },
+      parsed.out
+    );
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Full name">
+          <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} autoFocus={!initial} />
+        </Field>
+        <Field label="Opening balance (UGX)">
+          <input className={inputCls} inputMode="numeric" value={opening} onChange={(e) => setOpening(e.target.value)} />
+        </Field>
+      </div>
+
+      <div>
+        <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">Shares bought each month</p>
+        <div className="grid max-h-64 grid-cols-2 gap-2 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-3 sm:grid-cols-3">
+          {months.map((m) => (
+            <label key={m} className="block">
+              <span className="mb-0.5 block text-[10px] text-slate-500">{monthLabel(m)}</span>
+              <input
+                className={inputCls}
+                inputMode="decimal"
+                placeholder="0"
+                value={entries[m] ?? ""}
+                onChange={(e) => setEntries((prev) => ({ ...prev, [m]: e.target.value }))}
+                aria-label={`Shares in ${monthLabel(m)}`}
+              />
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3 rounded-lg border border-slate-800 bg-slate-950 p-3 text-xs">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total shares</p>
+          <p className="mt-1 font-mono font-bold text-slate-200">{fmtShares(totalShares)}</p>
+        </div>
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Saved (UGX)</p>
+          <p className="mt-1 font-mono font-bold text-slate-200">{money(totalShares * data.settings.shareValue)}</p>
+        </div>
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Interest share (UGX)</p>
+          <p className="mt-1 font-mono font-bold text-emerald-400">{preview ? money(preview.interest) : "–"}</p>
+        </div>
+      </div>
+      <p className="text-[10px] text-slate-500">
+        Interest is shared by shares held, so changing shares changes this member's interest (and slightly everyone else's). To change the interest the group collected, use Record interest.
+      </p>
+      <FormActions onClose={onClose} error={err} label={initial ? "Save changes" : "Add member"} />
     </form>
   );
 }
@@ -284,6 +405,9 @@ export default function InterestPage() {
         <div className="flex flex-wrap gap-2">
           <button className={btnGhost} onClick={exportCsv}>
             <Download size={14} /> Export CSV
+          </button>
+          <button className={btnGhost} onClick={() => setModal({ kind: "member", id: null })}>
+            <UserPlus size={14} /> Add member
           </button>
           <button className={btnPrimary} onClick={() => setModal({ kind: "interest", month: null })}>
             <Plus size={14} /> Record interest
@@ -437,7 +561,7 @@ export default function InterestPage() {
         <Card className="overflow-hidden border-slate-900 bg-slate-900/40">
           <CardHeader className="border-b border-slate-900/60 pb-4">
             <CardTitle className="text-sm font-bold uppercase tracking-wider text-slate-200">Each member's share</CardTitle>
-            <p className="mt-0.5 text-xs text-slate-400">Worked out from the shares each member holds</p>
+            <p className="mt-0.5 text-xs text-slate-400">Worked out from the shares each member holds. Use the pencil to change a member's shares.</p>
           </CardHeader>
           <CardContent className="p-0">
             <div className="max-h-[420px] overflow-auto">
@@ -447,6 +571,7 @@ export default function InterestPage() {
                     <th className={thCls}>Member</th>
                     <th className={`${thCls} text-right`}>Shares</th>
                     <th className={`${thCls} text-right`}>Interest (UGX)</th>
+                    <th className={thCls}></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-900">
@@ -455,6 +580,11 @@ export default function InterestPage() {
                       <td className="px-4 py-2.5 font-bold text-slate-200">{m.name}</td>
                       <td className="px-4 py-2.5 text-right font-mono text-slate-400">{fmtShares(m.shares)}</td>
                       <td className="px-4 py-2.5 text-right font-mono font-bold text-emerald-400">{money(m.interest)}</td>
+                      <td className="px-4 py-2.5 text-right">
+                        <button className={iconBtn} aria-label={`Edit ${m.name}`} onClick={() => setModal({ kind: "member", id: m.id })}>
+                          <Pencil size={13} />
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -463,6 +593,7 @@ export default function InterestPage() {
                     <td className="px-4 py-2.5 text-slate-300">Total</td>
                     <td className="px-4 py-2.5 text-right font-mono text-slate-300">{fmtShares(T.shares)}</td>
                     <td className="px-4 py-2.5 text-right font-mono text-emerald-400">{money(T.interest)}</td>
+                    <td />
                   </tr>
                 </tfoot>
               </table>
@@ -479,6 +610,21 @@ export default function InterestPage() {
             month={modal.month}
             onClose={() => setModal(null)}
             onSave={(month, amount) => saveInterest(month, amount, `${monthLabel(month)} saved.`)}
+          />
+        </Modal>
+      ) : null}
+
+      {modal?.kind === "member" ? (
+        <Modal title={modal.id ? "Edit member" : "Add member"} wide onClose={() => setModal(null)}>
+          <MemberSharesForm
+            data={data}
+            dash={dash}
+            memberId={modal.id}
+            onClose={() => setModal(null)}
+            onSave={(member, shares) => {
+              const added = upsertMember(data, member);
+              commit({ ...added, savings: { ...added.savings, [member.id]: shares } }, modal.id ? `${member.name} saved.` : `${member.name} added.`);
+            }}
           />
         </Modal>
       ) : null}

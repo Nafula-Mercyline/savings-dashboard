@@ -19,21 +19,16 @@ import {
   CreditCard,
   Wallet,
   TrendingUp,
-  Pencil,
   Plus,
   X,
   Building2,
-  CheckCircle,
-  AlertTriangle,
   Database,
   Download,
   Upload,
   RotateCcw,
-  Trash2,
 } from "lucide-react";
 import {
   STORAGE_KEY,
-  addRepayment,
   clearSavedData,
   cloneSeed,
   computeDashboard,
@@ -42,17 +37,9 @@ import {
   money,
   monthLabel,
   normalizeData,
-  removeLoan,
   saveData,
   setMonthEntries,
-  uid,
-  upsertLoan,
-  upsertMember,
   type Dashboard,
-  type Loan,
-  type LoanRow,
-  type Member,
-  type MemberRow,
   type SaccoData,
 } from "@/lib/saccoData";
 
@@ -84,16 +71,9 @@ const axisFmt = (n: number) =>
   n >= 1_000_000 ? `${+(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${Math.round(n / 1_000)}K` : String(n);
 
 const fmtShares = (n: number) => (Number.isInteger(n) ? money(n) : n.toFixed(1));
-const ratePct = (r: number) => `${+(r * 100).toFixed(2)}%`;
 const num = (s: string) => (s.trim() === "" ? 0 : Number(s.replace(/,/g, "")));
 
-type ModalState =
-  | { kind: "month" }
-  | { kind: "member"; id: string | null }
-  | { kind: "loan"; id: string | null }
-  | { kind: "repay"; id: string }
-  | { kind: "data" }
-  | null;
+type ModalState = { kind: "month" } | { kind: "data" } | null;
 
 /* ------------------------------------------------------------------ */
 /*  Small building blocks                                              */
@@ -310,251 +290,6 @@ function MonthForm({
   );
 }
 
-function MemberForm({
-  initial,
-  defaultOpening,
-  names,
-  onSave,
-  onClose,
-}: {
-  initial: Member | null;
-  defaultOpening: number;
-  names: string[];
-  onSave: (m: Member) => void;
-  onClose: () => void;
-}) {
-  const [name, setName] = useState(initial?.name ?? "");
-  const [opening, setOpening] = useState(String(initial?.opening ?? defaultOpening));
-  const [joined, setJoined] = useState(initial?.joined ?? "");
-  const [phone, setPhone] = useState(initial?.phone ?? "");
-  const [err, setErr] = useState("");
-
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    const clean = name.split(/\s+/).filter(Boolean).join(" ");
-    const o = num(opening);
-    if (!clean) return setErr("Enter the member's name.");
-    if (names.some((n) => n.toLowerCase() === clean.toLowerCase())) return setErr("A member with this name already exists.");
-    if (!Number.isFinite(o) || o < 0) return setErr("Opening balance must be 0 or more.");
-    onSave({ id: initial?.id ?? uid("m"), name: clean, opening: Math.round(o), joined: joined || null, phone: phone.trim() });
-  };
-
-  return (
-    <form onSubmit={submit} className="space-y-3">
-      <Field label="Full name">
-        <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-      </Field>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Opening balance (UGX)">
-          <input className={inputCls} inputMode="numeric" value={opening} onChange={(e) => setOpening(e.target.value)} />
-        </Field>
-        <Field label="Date joined">
-          <input className={inputCls} type="date" value={joined} onChange={(e) => setJoined(e.target.value)} />
-        </Field>
-      </div>
-      <Field label="Phone (optional)">
-        <input className={inputCls} value={phone} onChange={(e) => setPhone(e.target.value)} />
-      </Field>
-      <FormActions onClose={onClose} error={err} label={initial ? "Save changes" : "Add member"} />
-    </form>
-  );
-}
-
-function LoanForm({
-  initial,
-  members,
-  monthOptions,
-  onSave,
-  onDelete,
-  onClose,
-}: {
-  initial: Loan | null;
-  members: Member[];
-  monthOptions: string[];
-  onSave: (l: Loan) => void;
-  onDelete?: () => void;
-  onClose: () => void;
-}) {
-  const [memberId, setMemberId] = useState(initial?.memberId ?? "");
-  const [month, setMonth] = useState(initial?.month ?? "");
-  const [date, setDate] = useState(initial?.date ?? "");
-  const [principal, setPrincipal] = useState(initial ? String(initial.principal) : "");
-  const [rate, setRate] = useState(String(initial?.rate ?? 0.06));
-  const [interest, setInterest] = useState(initial ? String(initial.interest) : "");
-  const [repayable, setRepayable] = useState(initial ? String(initial.repayable) : "");
-  const [repayableEdited, setRepayableEdited] = useState(!!initial);
-  const [repaid, setRepaid] = useState(initial ? String(initial.repaid) : "0");
-  const [err, setErr] = useState("");
-
-  const months = Array.from(new Set([...monthOptions, ...(month ? [month] : [])])).sort();
-  const p = num(principal);
-  const i = num(interest);
-  const owedNow = Math.max(0, num(repayable) - num(repaid));
-
-  // "Total to repay" follows principal + interest until it is typed in by hand
-  const syncRepayable = (pr: string, int: string) => {
-    if (!repayableEdited) setRepayable(String(num(pr) + num(int)));
-  };
-
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    const r = Number(rate);
-    const rep = num(repayable);
-    const paid = num(repaid);
-    if (!memberId) return setErr("Choose the member.");
-    if (!Number.isFinite(p) || p <= 0) return setErr("Enter the amount lent.");
-    if (![0.04, 0.06].includes(r)) return setErr("The rate must be 4% or 6%.");
-    if (!Number.isFinite(i) || i < 0) return setErr("Interest must be 0 or more.");
-    if (!Number.isFinite(rep) || rep < p) return setErr("Total to repay can't be less than the amount lent.");
-    if (!Number.isFinite(paid) || paid < 0) return setErr("Amount repaid must be 0 or more.");
-    if (paid > rep) return setErr("Amount repaid can't be more than the total to repay.");
-    onSave({
-      id: initial?.id ?? uid("l"),
-      memberId,
-      month: month || null,
-      date: date || null,
-      principal: Math.round(p),
-      rate: r,
-      interest: Math.round(i),
-      repayable: Math.round(rep),
-      repaid: Math.round(paid),
-    });
-  };
-
-  return (
-    <form onSubmit={submit} className="space-y-3">
-      <Field label="Member">
-        <select className={inputCls} value={memberId} onChange={(e) => setMemberId(e.target.value)}>
-          <option value="">Choose a member…</option>
-          {members.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.name}
-            </option>
-          ))}
-        </select>
-      </Field>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Loan month" hint={month ? undefined : "Needed for it to show under a year"}>
-          <select className={inputCls} value={month} onChange={(e) => setMonth(e.target.value)}>
-            <option value="">Not set</option>
-            {months.map((m) => (
-              <option key={m} value={m}>
-                {monthLabel(m)}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Loan date (optional)">
-          <input
-            className={inputCls}
-            type="date"
-            value={date}
-            onChange={(e) => {
-              setDate(e.target.value);
-              if (!month && e.target.value.length === 10) setMonth(e.target.value.slice(0, 7));
-            }}
-          />
-        </Field>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Amount lent (UGX)">
-          <input
-            className={inputCls}
-            inputMode="numeric"
-            value={principal}
-            onChange={(e) => {
-              setPrincipal(e.target.value);
-              syncRepayable(e.target.value, interest);
-            }}
-          />
-        </Field>
-        <Field label="Monthly rate">
-          <select className={inputCls} value={rate} onChange={(e) => setRate(e.target.value)}>
-            <option value="0.04">4%</option>
-            <option value="0.06">6%</option>
-          </select>
-        </Field>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <Field
-          label="Total interest (UGX)"
-          hint={p > 0 ? `One month at ${ratePct(Number(rate))} = UGX ${money(p * Number(rate))}` : undefined}
-        >
-          <input
-            className={inputCls}
-            inputMode="numeric"
-            value={interest}
-            onChange={(e) => {
-              setInterest(e.target.value);
-              syncRepayable(principal, e.target.value);
-            }}
-          />
-        </Field>
-        <Field label="Total to repay (UGX)" hint="Lent amount + interest">
-          <input
-            className={inputCls}
-            inputMode="numeric"
-            value={repayable}
-            onChange={(e) => {
-              setRepayable(e.target.value);
-              setRepayableEdited(true);
-            }}
-          />
-        </Field>
-      </div>
-      <Field label="Already repaid (UGX)">
-        <input className={inputCls} inputMode="numeric" value={repaid} onChange={(e) => setRepaid(e.target.value)} />
-      </Field>
-      <p className="text-xs text-slate-400">
-        Still owed: <span className="font-mono font-bold text-slate-200">UGX {money(owedNow)}</span>
-      </p>
-      <FormActions
-        onClose={onClose}
-        error={err}
-        label={initial ? "Save changes" : "Add loan"}
-        left={
-          onDelete ? (
-            <button type="button" className={btnDanger} onClick={onDelete}>
-              <Trash2 size={12} /> Delete
-            </button>
-          ) : undefined
-        }
-      />
-    </form>
-  );
-}
-
-function RepayForm({ loan, onSave, onClose }: { loan: LoanRow; onSave: (amount: number) => void; onClose: () => void }) {
-  const [amount, setAmount] = useState("");
-  const [err, setErr] = useState("");
-
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    const a = num(amount);
-    if (!Number.isFinite(a) || a <= 0) return setErr("Enter an amount greater than 0.");
-    if (a > loan.balance) return setErr(`That is more than is still owed (UGX ${money(loan.balance)}).`);
-    onSave(Math.round(a));
-  };
-
-  return (
-    <form onSubmit={submit} className="space-y-3">
-      <p className="text-xs text-slate-400">
-        {loan.memberName} · lent UGX {money(loan.principal)} at {ratePct(loan.rate)}. Still owed{" "}
-        <span className="font-mono font-bold text-slate-200">UGX {money(loan.balance)}</span>
-      </p>
-      <Field label="Amount paid (UGX)">
-        <input className={inputCls} inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value)} autoFocus />
-      </Field>
-      {num(amount) > 0 && num(amount) <= loan.balance ? (
-        <p className="text-xs text-slate-400">
-          Still owed after this: <span className="font-mono font-bold text-slate-200">UGX {money(loan.balance - num(amount))}</span>
-        </p>
-      ) : null}
-      <FormActions onClose={onClose} error={err} label="Record payment" />
-    </form>
-  );
-}
-
 function DataPanel({
   data,
   saveFailed,
@@ -648,7 +383,6 @@ function DashboardInner() {
   const [saveFailed, setSaveFailed] = useState(false);
   const [modal, setModal] = useState<ModalState>(null);
   const [view, setView] = useState<"chart" | "table">("chart");
-  const [showCleared, setShowCleared] = useState(false);
   const [notice, setNotice] = useState("");
   const [today, setToday] = useState("");
 
@@ -694,14 +428,8 @@ function DashboardInner() {
     );
   }
 
-  const { kpi, chart, members, memberTotals, loans, rateSplit } = dash;
+  const { kpi, chart } = dash;
   const periodLabel = period === "all" ? "All time" : period;
-  const openLoans = loans.filter((l) => l.open);
-  const visibleLoans = showCleared ? loans : openLoans;
-  const maxSaved = Math.max(1, ...members.map((m) => m.saved));
-  const editingMember = modal?.kind === "member" && modal.id ? data.members.find((m) => m.id === modal.id) ?? null : null;
-  const editingLoan = modal?.kind === "loan" && modal.id ? data.loans.find((l) => l.id === modal.id) ?? null : null;
-  const repayingLoan = modal?.kind === "repay" ? loans.find((l) => l.id === modal.id) ?? null : null;
 
   return (
     <div className="min-h-screen bg-slate-950 p-4 text-slate-100 sm:p-6">
@@ -870,189 +598,6 @@ function DashboardInner() {
             )}
           </CardContent>
         </Card>
-
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-          {/* Members */}
-          <Card className="overflow-hidden border-slate-900 bg-slate-900/40">
-            <CardHeader className="border-b border-slate-900/60 pb-3">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <CardTitle className="text-sm font-bold uppercase tracking-wider text-slate-300">Members</CardTitle>
-                  <p className="mt-1 text-xs text-slate-500">Whole cycle to date, whichever year is selected</p>
-                </div>
-                <button type="button" className={btnAdd} onClick={() => setModal({ kind: "member", id: null })}>
-                  <Plus size={12} /> Member
-                </button>
-              </div>
-            </CardHeader>
-            <CardContent className="max-h-[30rem] overflow-auto px-0 pt-0">
-              <table className="w-full border-collapse text-left">
-                <thead className="sticky top-0 z-10 bg-slate-900">
-                  <tr className="border-b border-slate-800">
-                    <th className={thCls}>Member</th>
-                    <th className={`${thCls} text-right`}>Saved</th>
-                    <th className={`${thCls} text-right`}>Interest</th>
-                    <th className={`${thCls} text-right`}>Owes</th>
-                    <th className={`${thCls} text-right`}>Payout</th>
-                    <th className="w-10" />
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-900/60">
-                  {members.length === 0 && (
-                    <tr>
-                      <td colSpan={6} className="px-5 py-8 text-center text-xs text-slate-500">
-                        No members yet.
-                      </td>
-                    </tr>
-                  )}
-                  {members.map((m: MemberRow) => (
-                    <tr key={m.id} className="hover:bg-slate-900/40">
-                      <td className="px-4 py-2.5 text-xs font-semibold text-slate-200">{m.name}</td>
-                      <td className="px-4 py-2.5 text-right">
-                        <span className="font-mono text-xs text-slate-300">{money(m.saved)}</span>
-                        <div className="ml-auto mt-1 h-1 w-20 overflow-hidden rounded-full bg-slate-800">
-                          <div className="h-full rounded-full" style={{ width: `${(m.saved / maxSaved) * 100}%`, background: C_SAVINGS }} />
-                        </div>
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-mono text-xs text-slate-300">{money(m.interest)}</td>
-                      <td className={`px-4 py-2.5 text-right font-mono text-xs ${m.owed > 0 ? "text-rose-400" : "text-slate-600"}`}>
-                        {m.owed > 0 ? money(m.owed) : "—"}
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-mono text-xs font-bold text-slate-100">{money(m.payout)}</td>
-                      <td className="px-2 py-2.5 text-right">
-                        <button
-                          type="button"
-                          className={iconBtn}
-                          title="Edit member"
-                          aria-label={`Edit ${m.name}`}
-                          onClick={() => setModal({ kind: "member", id: m.id })}
-                        >
-                          <Pencil size={13} />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-                {members.length > 0 && (
-                  <tfoot className="sticky bottom-0 bg-slate-900">
-                    <tr className="border-t border-slate-800">
-                      <td className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-400">Total</td>
-                      <td className="px-4 py-3 text-right font-mono text-xs font-bold text-slate-100">{money(memberTotals.saved)}</td>
-                      <td className="px-4 py-3 text-right font-mono text-xs font-bold text-slate-100">{money(memberTotals.interest)}</td>
-                      <td className="px-4 py-3 text-right font-mono text-xs font-bold text-rose-400">{money(memberTotals.owed)}</td>
-                      <td className="px-4 py-3 text-right font-mono text-xs font-bold text-slate-100">{money(memberTotals.payout)}</td>
-                      <td />
-                    </tr>
-                  </tfoot>
-                )}
-              </table>
-            </CardContent>
-          </Card>
-
-          {/* Loans */}
-          <Card className="overflow-hidden border-slate-900 bg-slate-900/40">
-            <CardHeader className="border-b border-slate-900/60 pb-3">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <CardTitle className="text-sm font-bold uppercase tracking-wider text-slate-300">Loans · {periodLabel}</CardTitle>
-                  <p className="mt-1 text-xs text-slate-500">
-                    {rateSplit.length === 0
-                      ? "No loans in this period"
-                      : rateSplit.map((r) => `${ratePct(r.rate)}: UGX ${money(r.principal)}`).join(" · ")}
-                  </p>
-                </div>
-                <div className="flex items-center gap-3">
-                  {loans.length > openLoans.length && (
-                    <label className="flex cursor-pointer items-center gap-1.5 text-[11px] font-semibold text-slate-400">
-                      <input
-                        type="checkbox"
-                        className="accent-amber-500"
-                        checked={showCleared}
-                        onChange={(e) => setShowCleared(e.target.checked)}
-                      />
-                      Show cleared ({loans.length - openLoans.length})
-                    </label>
-                  )}
-                  <button type="button" className={btnAdd} onClick={() => setModal({ kind: "loan", id: null })}>
-                    <Plus size={12} /> Loan
-                  </button>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="max-h-[30rem] overflow-auto px-0 pt-0">
-              <table className="w-full border-collapse text-left">
-                <thead className="sticky top-0 z-10 bg-slate-900">
-                  <tr className="border-b border-slate-800">
-                    <th className={thCls}>Member</th>
-                    <th className={`${thCls} text-right`}>Lent</th>
-                    <th className={`${thCls} text-right`}>Still owed</th>
-                    <th className="w-24" />
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-900/60">
-                  {visibleLoans.length === 0 && (
-                    <tr>
-                      <td colSpan={4} className="px-5 py-8 text-center text-xs text-slate-500">
-                        {loans.length === 0 ? "No loans yet." : "Every loan in this period is cleared."}
-                      </td>
-                    </tr>
-                  )}
-                  {visibleLoans.map((l) => (
-                    <tr key={l.id} className="hover:bg-slate-900/40">
-                      <td className="px-4 py-2.5">
-                        <p className="text-xs font-semibold text-slate-200">{l.memberName}</p>
-                        <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
-                          <span>
-                            {l.month ? monthLabel(l.month) : "No month"} · {ratePct(l.rate)}
-                          </span>
-                          {!l.month && (
-                            <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold text-amber-400">
-                              <AlertTriangle size={10} /> Month not set
-                            </span>
-                          )}
-                          {!l.open && (
-                            <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-400">
-                              <CheckCircle size={10} /> Cleared
-                            </span>
-                          )}
-                        </p>
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-mono text-xs text-slate-300">{money(l.principal)}</td>
-                      <td className="px-4 py-2.5 text-right">
-                        <span className={`font-mono text-xs font-bold ${l.open ? "text-rose-400" : "text-slate-600"}`}>
-                          {l.open ? money(l.balance) : "—"}
-                        </span>
-                        {l.open && (
-                          <div className="ml-auto mt-1 h-1 w-20 overflow-hidden rounded-full bg-slate-800" title={`${l.paidPct}% repaid`}>
-                            <div className="h-full rounded-full" style={{ width: `${l.paidPct}%`, background: C_INTEREST }} />
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-2 py-2.5">
-                        <div className="flex items-center justify-end gap-1">
-                          {l.open && (
-                            <button type="button" className={btnAdd} title="Record a payment" onClick={() => setModal({ kind: "repay", id: l.id })}>
-                              Repay
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            className={iconBtn}
-                            title="Edit loan"
-                            aria-label={`Edit loan for ${l.memberName}`}
-                            onClick={() => setModal({ kind: "loan", id: l.id })}
-                          >
-                            <Pencil size={13} />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </CardContent>
-          </Card>
-        </div>
       </div>
 
       {/* Dialogs */}
@@ -1062,49 +607,6 @@ function DashboardInner() {
             data={data}
             dash={dash}
             onSave={(month, shares, interest) => commit(setMonthEntries(data, month, shares, interest), `${monthLabel(month)} saved`)}
-            onClose={() => setModal(null)}
-          />
-        </Modal>
-      )}
-
-      {modal?.kind === "member" && (
-        <Modal title={editingMember ? "Edit member" : "Add member"} onClose={() => setModal(null)}>
-          <MemberForm
-            initial={editingMember}
-            defaultOpening={data.settings.openingBalance}
-            names={data.members.filter((m) => m.id !== editingMember?.id).map((m) => m.name)}
-            onSave={(m) => commit(upsertMember(data, m), editingMember ? "Member updated" : "Member added")}
-            onClose={() => setModal(null)}
-          />
-        </Modal>
-      )}
-
-      {modal?.kind === "loan" && (
-        <Modal title={editingLoan ? "Edit loan" : "Add loan"} onClose={() => setModal(null)}>
-          <LoanForm
-            initial={editingLoan}
-            members={data.members}
-            monthOptions={dash.monthOptions}
-            onSave={(l) => commit(upsertLoan(data, l), editingLoan ? "Loan updated" : "Loan added")}
-            onDelete={
-              editingLoan
-                ? () => {
-                  if (window.confirm("Delete this loan? This can't be undone (except by restoring a backup).")) {
-                    commit(removeLoan(data, editingLoan.id), "Loan deleted");
-                  }
-                }
-                : undefined
-            }
-            onClose={() => setModal(null)}
-          />
-        </Modal>
-      )}
-
-      {modal?.kind === "repay" && repayingLoan && (
-        <Modal title="Record payment" onClose={() => setModal(null)}>
-          <RepayForm
-            loan={repayingLoan}
-            onSave={(amount) => commit(addRepayment(data, repayingLoan.id, amount), "Payment recorded")}
             onClose={() => setModal(null)}
           />
         </Modal>
