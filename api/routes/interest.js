@@ -5,6 +5,7 @@
  * Base URL: /api/interest
  *
  *   GET    /api/interest                        — list all interest records
+ *   GET    /api/interest/dashboard              — dashboard analytics data
  *   GET    /api/interest/:id                    — get a single interest record
  *   POST   /api/interest                        — manually create an interest record
  *   PUT    /api/interest/:id                    — update an interest record
@@ -116,7 +117,20 @@ router.post(
   interestController.processPayout
 );
 
-// ─── Scoped Lookups ───────────────────────────────────────────────────────────
+// ─── Scoped Lookups & Analytics ───────────────────────────────────────────────
+
+/**
+ * GET /api/interest/dashboard
+ * Returns dashboard metrics filtered by year.
+ * Query params:
+ *   year — YYYY (e.g., 2024)
+ * Access: admin, treasurer
+ */
+router.get(
+  "/dashboard",
+  roles(["admin", "treasurer"]),
+  interestController.getDashboard
+);
 
 /**
  * GET /api/interest/member/:memberId
@@ -228,6 +242,3 @@ router.delete(
 );
 
 module.exports = router;
-
-
-

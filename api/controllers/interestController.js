@@ -133,6 +133,20 @@ exports.getSummary = async (req, res, next) => {
   }
 };
 
+// ─── GET /api/interest/dashboard ──────────────────────────────────────────────
+exports.getDashboard = async (req, res, next) => {
+  try {
+    const { year } = req.query;
+    // Extract the year parameter or default to the current year
+    const targetYear = year ? parseInt(year) : new Date().getFullYear();
+    
+    const data = await interestService.getDashboard({ year: targetYear });
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+};
+
 // ─── POST /api/interest/payout ────────────────────────────────────────────────
 exports.processPayout = async (req, res, next) => {
   try {
@@ -186,6 +200,3 @@ exports.getByLoan = async (req, res, next) => {
     next(err);
   }
 };
-
-
-

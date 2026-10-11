@@ -114,6 +114,7 @@ exports.getAllInterest = async ({ type, period, page, limit }) => {
     where,
     include: [{
       model:      Member,
+      as:         "member",
       attributes: ["id", "firstName", "lastName", "memberNumber"],
     }],
     order:  [["createdAt", "DESC"]],
@@ -138,6 +139,7 @@ exports.getInterestById = async (id) => {
   return Interest.findByPk(id, {
     include: [{
       model:      Member,
+      as:         "member",
       attributes: ["id", "firstName", "lastName", "memberNumber"],
     }],
   });
@@ -210,7 +212,7 @@ exports.calculateSavingsInterest = async ({ period = "monthly", asAt = new Date(
   const label    = periodLabel(asAt);
   const savings  = await Saving.findAll({
     where:   { status: "active" },
-    include: [{ model: Member, attributes: ["id", "firstName", "lastName"] }],
+    include: [{ model:      Member, as:         "member", attributes: ["id", "firstName", "lastName"] }],
   });
 
   const results = [];
@@ -245,14 +247,14 @@ exports.calculateSavingsInterest = async ({ period = "monthly", asAt = new Date(
     }
 
     results.push({
-      savingId:      saving.id,
-      memberId:      saving.memberId,
-      memberName:    `${saving.Member.firstName} ${saving.Member.lastName}`,
-      balance:       saving.balance,
-      interestRate:  saving.interestRate,
+      savingId:       saving.id,
+      memberId:       saving.memberId,
+      memberName:    `${saving.member.firstName} ${saving.member.lastName}`,
+      balance:        saving.balance,
+      interestRate:   saving.interestRate,
       interestEarned: amount,
-      period:        label,
-      saved:         !dryRun && amount > 0,
+      period:         label,
+      saved:          !dryRun && amount > 0,
     });
   }
 
@@ -276,15 +278,15 @@ exports.calculateSavingsInterest = async ({ period = "monthly", asAt = new Date(
  * Skips loans that already have a charge record for this period.
  *
  * @param {Object} options
- * @param {string}  options.period
- * @param {Date}    options.asAt
+ * @param {string}   options.period
+ * @param {Date}     options.asAt
  * @param {boolean} options.dryRun
  */
 exports.calculateLoanInterest = async ({ period = "monthly", asAt = new Date(), dryRun = false }) => {
   const label = periodLabel(asAt);
   const loans = await Loan.findAll({
     where:   { status: "active" },
-    include: [{ model: Member, attributes: ["id", "firstName", "lastName"] }],
+    include: [{ model:      Member, as:         "member", attributes: ["id", "firstName", "lastName"] }],
   });
 
   const results = [];
@@ -320,7 +322,7 @@ exports.calculateLoanInterest = async ({ period = "monthly", asAt = new Date(), 
     results.push({
       loanId:          loan.id,
       memberId:        loan.memberId,
-      memberName:      `${loan.Member.firstName} ${loan.Member.lastName}`,
+      memberName:      `${loan.member.firstName} ${loan.member.lastName}`,
       loanBalance:     loan.balance,
       interestRate:    loan.interestRate,
       interestCharged: amount,
@@ -349,8 +351,8 @@ exports.calculateLoanInterest = async ({ period = "monthly", asAt = new Date(), 
  * Calculates savings interest AND loan interest in one go.
  *
  * @param {Object} options
- * @param {string}  options.period
- * @param {Date}    options.asAt
+ * @param {string}   options.period
+ * @param {Date}     options.asAt
  * @param {boolean} options.dryRun
  */
 exports.calculateAll = async ({ period = "monthly", asAt = new Date(), dryRun = false }) => {
@@ -603,4 +605,66 @@ exports.getByLoan = async (loanId, { page, limit }) => {
   };
 };
 
+// ─── 14. Get Dashboard Analytics ──────────────────────────────────────────────
 
+/**
+ * Returns aggregated interest dashboard metrics broken down by month for a given year.
+ * @param {Object} params
+ * @param {number|string} params.year
+ */
+exports.getDashboard = async ({ year }) => {
+  const targetYear = parseInt(year, 10) || new Date().getFullYear();
+
+  // 1. Fetch aggregated interest sums grouped by month and type for the specific year
+  const rawAnalytics = await Interest.findAll({
+    attributes: [
+      [fn("SUBSTRING", col("period"), 6, 2), "month"],
+      "type",
+      [fn("SUM", col("amount")), "totalAmount"],
+    ],
+    where: {
+      period: {
+        [Op.like]: `${targetYear}-%`,
+      },
+    },
+    group: ["month", "type"],
+    raw: true,
+  });
+
+  // 2. Initialize a clean 12-month array structure for the layout
+  const monthlyDataMap = {};
+  for (let m = 1; m <= 12; m++) {
+    const monthKey = String(m).padStart(2, "0");
+    monthlyDataMap[monthKey] = { month: m, earned: 0, charged: 0 };
+  }
+
+  // 3. Map database results to their respective calendar months
+  let totalInterestEarned = 0;
+  let totalInterestCharged = 0;
+
+  rawAnalytics.forEach((row) => {
+    const monthKey = row.month;
+    const amount = parseFloat(row.totalAmount) || 0;
+
+    if (monthlyDataMap[monthKey]) {
+      if (row.type === "earned") {
+        monthlyDataMap[monthKey].earned = parseFloat(amount.toFixed(2));
+        totalInterestEarned += amount;
+      } else if (row.type === "charged") {
+        monthlyDataMap[monthKey].charged = parseFloat(amount.toFixed(2));
+        totalInterestCharged += amount;
+      }
+    }
+  });
+
+  // 4. Return summary calculations alongside the monthly breakdown array
+  return {
+    year: targetYear,
+    summary: {
+      totalInterestEarned: parseFloat(totalInterestEarned.toFixed(2)),
+      totalInterestCharged: parseFloat(totalInterestCharged.toFixed(2)),
+      netInterest: parseFloat((totalInterestEarned - totalInterestCharged).toFixed(2)),
+    },
+    monthlyBreakdown: Object.values(monthlyDataMap),
+  };
+};

@@ -133,6 +133,7 @@ exports.getAllTransactions = async ({ type, status, from, to, page, limit, searc
     where,
     include: [{
       model:      Member,
+      as:         member,
       attributes: ["id", "firstName", "lastName", "memberNumber"],
       where:      Object.keys(memberWhere).length ? memberWhere : undefined,
       required:   false,
@@ -160,6 +161,7 @@ exports.getTransactionById = async (id) => {
     include: [
       {
         model:      Member,
+        as:         member,
         attributes: ["id", "firstName", "lastName", "memberNumber", "phone"],
       },
       {
@@ -386,6 +388,7 @@ exports.exportTransactions = async ({ from, to, type, format }) => {
     where,
     include: [{
       model:      Member,
+      as:         member,
       attributes: ["id", "firstName", "lastName", "memberNumber"],
     }],
     order: [["createdAt", "ASC"]],
@@ -446,6 +449,7 @@ exports.getRecent = async ({ limit, type }) => {
     where,
     include: [{
       model:      Member,
+      as:         member,
       attributes: ["id", "firstName", "lastName", "memberNumber"],
     }],
     order: [["createdAt", "DESC"]],
@@ -588,5 +592,6 @@ exports.getByLoan = async (loanId, { page, limit }) => {
     },
   };
 };
+
 
 

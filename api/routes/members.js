@@ -10,6 +10,7 @@
  *   PUT    /api/members/:id                    — update member details
  *   DELETE /api/members/:id                    — deactivate a member
  *
+ *   GET    /api/members/dashboard              — member dashboard metrics
  *   GET    /api/members/:id/profile            — full member profile (savings, loans, interest)
  *   GET    /api/members/:id/savings            — member saving accounts
  *   GET    /api/members/:id/loans              — member loans
@@ -40,7 +41,9 @@ const {
 // Apply auth to all member routes
 router.use(auth);
 
-// NOTE: static paths must come before /:id
+// ==========================================
+// STATIC PATHS (Must come before /:id)
+// ==========================================
 
 // Search
 router.get(
@@ -55,6 +58,17 @@ router.get(
   roles(["admin", "treasurer"]),
   membersController.getMemberStats
 );
+
+// Dashboard Metrics (Fixed: Moved above /:id to prevent routing conflicts)
+router.get(
+  "/dashboard",
+  roles(["admin", "treasurer", "secretary"]), // Adjust these roles as needed for your app
+  membersController.getMemberDashboard // Ensure this method exists in your membersController!
+);
+
+// ==========================================
+// DYNAMIC PATHS (CRUD & Sub-resources)
+// ==========================================
 
 // CRUD
 router.get(
@@ -103,6 +117,3 @@ router.put("/:id/deactivate", roles(["admin"]),              membersController.d
 router.put("/:id/avatar",     roles(["admin", "secretary"]), membersController.updateAvatar);
 
 module.exports = router;
-
-
-

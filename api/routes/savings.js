@@ -1,20 +1,7 @@
 /**
  * api/routes/savings.js
  * Savings Routes
- *
  * Base URL: /api/savings
- *
- *   GET    /api/savings                  — list all savings accounts
- *   GET    /api/savings/:id              — get a single saving account
- *   POST   /api/savings                  — open a new saving account
- *   PUT    /api/savings/:id              — update saving account details
- *   DELETE /api/savings/:id              — close / deactivate saving account
- *
- *   POST   /api/savings/:id/deposit      — make a deposit
- *   POST   /api/savings/:id/withdraw     — make a withdrawal
- *   GET    /api/savings/:id/transactions — transaction history for an account
- *   GET    /api/savings/:id/statement    — downloadable statement (PDF-ready)
- *   GET    /api/savings/member/:memberId — all savings for a specific member
  */
 
 const express = require("express");
@@ -31,18 +18,27 @@ const {
   withdrawSchema,
 } = require("../validators/savingsValidator");
 
-// ─── Apply auth to all savings routes ─────────────────────────────────────────
+// ─── Apply auth to ALL routes FIRST ───────────────────────────────────────────
 router.use(auth);
 
-// ─── Account Management ───────────────────────────────────────────────────────
+// ─── NOTE: Static paths must come BEFORE /:id ─────────────────────────────────
 
+// ─── Member-scoped Lookup ─────────────────────────────────────────────────────
+/**
+ * GET /api/savings/member/:memberId
+ * All saving accounts for a specific member.
+ * Access: admin, treasurer, secretary
+ */
+router.get(
+  "/member/:memberId",
+  roles(["admin", "treasurer", "secretary"]),
+  savingsController.getSavingsByMember
+);
+
+// ─── Account List ─────────────────────────────────────────────────────────────
 /**
  * GET /api/savings
- * Query params:
- *   status   — "active" | "inactive" | "closed" | "all"  (default: active)
- *   page     — page number  (default: 1)
- *   limit    — records per page (default: 20, max: 100)
- *   search   — search by member name or account number
+ * Query params: status, page, limit, search
  * Access: admin, treasurer, secretary
  */
 router.get(
@@ -51,16 +47,20 @@ router.get(
   savingsController.getAllSavings
 );
 
+// ─── Single Account ───────────────────────────────────────────────────────────
 /**
  * GET /api/savings/:id
- * Returns a single saving account with its current balance and member info.
- * Access: admin, treasurer, secretary, or the account owner (member)
+ * Access: admin, treasurer, secretary
  */
-router.get("/:id", savingsController.getSavingById);
+router.get(
+  "/:id",
+  roles(["admin", "treasurer", "secretary"]),
+  savingsController.getSavingById
+);
 
+// ─── Create Account ───────────────────────────────────────────────────────────
 /**
  * POST /api/savings
- * Opens a new saving account for a member.
  * Body: { memberId, accountType, initialDeposit, interestRate }
  * Access: admin, treasurer
  */
@@ -71,9 +71,9 @@ router.post(
   savingsController.createSaving
 );
 
+// ─── Update Account ───────────────────────────────────────────────────────────
 /**
  * PUT /api/savings/:id
- * Updates account details (interest rate, account type, status).
  * Body: { interestRate?, accountType?, status? }
  * Access: admin only
  */
@@ -84,9 +84,9 @@ router.put(
   savingsController.updateSaving
 );
 
+// ─── Close Account ────────────────────────────────────────────────────────────
 /**
  * DELETE /api/savings/:id
- * Closes / deactivates a saving account.
  * Only allowed if balance is zero.
  * Access: admin only
  */
@@ -96,11 +96,9 @@ router.delete(
   savingsController.deleteSaving
 );
 
-// ─── Deposits & Withdrawals ───────────────────────────────────────────────────
-
+// ─── Deposit ──────────────────────────────────────────────────────────────────
 /**
  * POST /api/savings/:id/deposit
- * Records a deposit into a saving account.
  * Body: { amount, paymentMethod, reference?, notes? }
  * Access: admin, treasurer
  */
@@ -111,11 +109,10 @@ router.post(
   savingsController.deposit
 );
 
+// ─── Withdraw ─────────────────────────────────────────────────────────────────
 /**
  * POST /api/savings/:id/withdraw
- * Records a withdrawal from a saving account.
  * Body: { amount, paymentMethod, reference?, notes? }
- * Rejects if amount > available balance.
  * Access: admin, treasurer
  */
 router.post(
@@ -125,17 +122,10 @@ router.post(
   savingsController.withdraw
 );
 
-// ─── History & Statements ─────────────────────────────────────────────────────
-
+// ─── Transaction History ──────────────────────────────────────────────────────
 /**
  * GET /api/savings/:id/transactions
- * Returns paginated transaction history for a specific saving account.
- * Query params:
- *   type     — "deposit" | "withdrawal" | "all"  (default: all)
- *   from     — start date  YYYY-MM-DD
- *   to       — end date    YYYY-MM-DD
- *   page     — default 1
- *   limit    — default 20
+ * Query params: type, from, to, page, limit
  * Access: admin, treasurer, secretary
  */
 router.get(
@@ -144,13 +134,10 @@ router.get(
   savingsController.getTransactions
 );
 
+// ─── Statement ────────────────────────────────────────────────────────────────
 /**
  * GET /api/savings/:id/statement
- * Returns a full account statement for a date range.
- * Query params:
- *   from  — YYYY-MM-DD  (default: first day of current month)
- *   to    — YYYY-MM-DD  (default: today)
- *   format — "json" | "pdf"  (default: json)
+ * Query params: from, to, format
  * Access: admin, treasurer
  */
 router.get(
@@ -159,20 +146,4 @@ router.get(
   savingsController.getStatement
 );
 
-// ─── Member-scoped Lookup ─────────────────────────────────────────────────────
-
-/**
- * GET /api/savings/member/:memberId
- * Returns all saving accounts belonging to a specific member.
- * Access: admin, treasurer, secretary
- */
-router.get(
-  "/member/:memberId",
-  roles(["admin", "treasurer", "secretary"]),
-  savingsController.getSavingsByMember
-);
-
 module.exports = router;
-
-
-

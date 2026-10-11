@@ -52,16 +52,6 @@ function resolveSort(sortBy) {
 
 // ─── 1. Get All Members ───────────────────────────────────────────────────────
 
-/**
- * Returns paginated list of all members with basic savings summary.
- * @param {Object} options
- * @param {string} options.status  — "active" | "inactive" | "all"
- * @param {number} options.page
- * @param {number} options.limit
- * @param {string} options.search  — name, email, phone, memberNumber
- * @param {string} options.sortBy  — "name" | "createdAt"
- * @param {string} options.order   — "ASC" | "DESC"
- */
 exports.getAllMembers = async ({ status, page, limit, search, sortBy, order }) => {
   const offset = (page - 1) * limit;
 
@@ -98,10 +88,6 @@ exports.getAllMembers = async ({ status, page, limit, search, sortBy, order }) =
 
 // ─── 2. Get Member By ID ──────────────────────────────────────────────────────
 
-/**
- * Returns a single member with savings and loan summary counts.
- * @param {number|string} id
- */
 exports.getMemberById = async (id) => {
   const member = await Member.findByPk(id);
   if (!member) return null;
@@ -124,25 +110,6 @@ exports.getMemberById = async (id) => {
 
 // ─── 3. Create Member ─────────────────────────────────────────────────────────
 
-/**
- * Registers a new member.
- * Auto-generates memberNumber.
- * Blocks duplicate email, phone, or nationalId.
- *
- * @param {Object} body
- * @param {string} body.firstName
- * @param {string} body.lastName
- * @param {string} body.email
- * @param {string} body.phone
- * @param {string} body.nationalId
- * @param {string} body.dateOfBirth   — YYYY-MM-DD
- * @param {string} body.gender        — "male" | "female" | "other"
- * @param {string} body.address
- * @param {string} body.nextOfKin
- * @param {string} body.nextOfKinPhone
- * @param {string} body.occupation
- * @param {string} body.joinedAt      — YYYY-MM-DD (default: today)
- */
 exports.createMember = async (body) => {
   const {
     firstName, lastName, email, phone, nationalId,
@@ -150,7 +117,6 @@ exports.createMember = async (body) => {
     nextOfKinPhone, occupation, joinedAt,
   } = body;
 
-  // Duplicate checks
   const existing = await Member.findOne({
     where: {
       [Op.or]: [
@@ -194,11 +160,6 @@ exports.createMember = async (body) => {
 
 // ─── 4. Update Member ─────────────────────────────────────────────────────────
 
-/**
- * Updates allowed personal fields on a member.
- * @param {number|string} id
- * @param {Object} body
- */
 exports.updateMember = async (id, body) => {
   const member = await Member.findByPk(id);
   if (!member) return null;
@@ -218,11 +179,6 @@ exports.updateMember = async (id, body) => {
 
 // ─── 5. Delete (Deactivate) Member ───────────────────────────────────────────
 
-/**
- * Soft-deletes a member by setting status to "inactive".
- * Blocked if member has an active loan or positive saving balance.
- * @param {number|string} id
- */
 exports.deleteMember = async (id) => {
   const member = await Member.findByPk(id);
   if (!member) throw Object.assign(new Error("Member not found"), { status: 404 });
@@ -252,12 +208,6 @@ exports.deleteMember = async (id) => {
 
 // ─── 6. Get Full Member Profile ───────────────────────────────────────────────
 
-/**
- * Returns a 360° member profile:
- * personal info, savings summary, loan summary,
- * recent transactions, interest totals.
- * @param {number|string} id
- */
 exports.getMemberProfile = async (id) => {
   const member = await Member.findByPk(id);
   if (!member) return null;
@@ -408,12 +358,6 @@ exports.getMemberInterest = async (id, { type, page, limit }) => {
 
 // ─── 11. Get Member Statement ─────────────────────────────────────────────────
 
-/**
- * Full financial statement for a member over a date range.
- * Includes all transactions, savings balances, and loan activity.
- * @param {number|string} id
- * @param {Object} options — { from, to }
- */
 exports.getMemberStatement = async (id, { from, to }) => {
   const member = await Member.findByPk(id);
   if (!member) throw Object.assign(new Error("Member not found"), { status: 404 });
@@ -507,10 +451,6 @@ exports.updateAvatar = async (id, avatarUrl) => {
 
 // ─── 15. Search Members ───────────────────────────────────────────────────────
 
-/**
- * Fast type-ahead search across all identifiable fields.
- * @param {Object} options — { q, status, limit }
- */
 exports.searchMembers = async ({ q, status, limit }) => {
   const where = {
     [Op.or]: [
@@ -529,9 +469,6 @@ exports.searchMembers = async ({ q, status, limit }) => {
 
 // ─── 16. Get Member Stats ─────────────────────────────────────────────────────
 
-/**
- * Returns aggregate membership statistics for the dashboard.
- */
 exports.getMemberStats = async () => {
   const now        = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -549,14 +486,12 @@ exports.getMemberStats = async () => {
     Member.count({ where: { status: "inactive" } }),
     Member.count({ where: { createdAt: { [Op.gte]: monthStart } } }),
 
-    // Members with at least one active loan
     Loan.count({
       distinct: true,
       col:      "memberId",
       where:    { status: "active" },
     }),
 
-    // Top 5 members by total savings balance
     Saving.findAll({
       attributes: ["memberId", [fn("SUM", col("balance")), "totalBalance"]],
       where:      { status: "active" },
@@ -565,6 +500,7 @@ exports.getMemberStats = async () => {
       limit:      5,
       include:    [{
         model:      Member,
+        as:         "Member", 
         attributes: ["id", "firstName", "lastName", "memberNumber"],
       }],
       raw:  true,
@@ -587,4 +523,53 @@ exports.getMemberStats = async () => {
   };
 };
 
+// ─── 17. Get Member Dashboard (Fixes the missing function error) ──────────────
 
+/**
+ * Custom dashboard details handling pagination and yearly filtering.
+ */
+exports.getMemberDashboard = async ({ year, page, pageSize }) => {
+  const limit = parseInt(pageSize, 10) || 10;
+  const offset = ((parseInt(page, 10) || 10) - 1) * limit;
+  const filterYear = parseInt(year, 10) || new Date().getFullYear();
+
+  // Create date limits for the filtered year
+  const startOfYear = new Date(`${filterYear}-01-01T00:00:00`);
+  const endOfYear = new Date(`${filterYear}-12-31T23:59:59`);
+
+  const yearWhereClause = {
+    createdAt: {
+      [Op.between]: [startOfYear, endOfYear]
+    }
+  };
+
+  // Fetch paginated members matching the year filter
+  const { count, rows } = await Member.findAndCountAll({
+    where: yearWhereClause,
+    limit,
+    offset,
+    order: [["createdAt", "DESC"]]
+  });
+
+  // Gather system overview metrics for this year
+  const [yearlySavings, yearlyActiveLoans] = await Promise.all([
+    Saving.sum("balance", { where: yearWhereClause }),
+    Loan.count({ where: { status: "active", ...yearWhereClause } })
+  ]);
+
+  return {
+    summary: {
+      year: filterYear,
+      totalNewMembersThisYear: count,
+      totalSavingsThisYear: yearlySavings || 0,
+      activeLoansOpenedThisYear: yearlyActiveLoans || 0
+    },
+    data: rows,
+    pagination: {
+      total: count,
+      page: parseInt(page, 10) || 1,
+      limit,
+      totalPages: Math.ceil(count / limit)
+    }
+  };
+};

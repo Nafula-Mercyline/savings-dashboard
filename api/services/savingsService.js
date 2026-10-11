@@ -1,10 +1,5 @@
 /**
  * api/services/savingsService.js
- *
- * All business logic for savings accounts.
- * Uses Sequelize ORM — swap queries for Mongoose/Knex as needed.
- *
- * Models expected: Saving, Member, Transaction
  */
 
 const { Op }  = require("sequelize");
@@ -16,14 +11,12 @@ const Transaction = require("../models/Transaction");
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Generates a unique account number e.g. SAV-2026-00042 */
 function generateAccountNumber() {
   const year   = new Date().getFullYear();
   const suffix = Math.floor(10000 + Math.random() * 90000);
   return `SAV-${year}-${suffix}`;
 }
 
-/** Builds a date range filter from optional from/to strings (YYYY-MM-DD) */
 function buildDateFilter(from, to) {
   if (!from && !to) return {};
   const filter = {};
@@ -34,29 +27,18 @@ function buildDateFilter(from, to) {
 
 // ─── 1. Get All Savings ───────────────────────────────────────────────────────
 
-/**
- * Returns paginated list of all saving accounts.
- * @param {Object} options
- * @param {string} options.status  — "active" | "inactive" | "closed" | "all"
- * @param {number} options.page
- * @param {number} options.limit
- * @param {string} options.search  — searches member name or account number
- */
 exports.getAllSavings = async ({ status, page, limit, search }) => {
   const offset = (page - 1) * limit;
 
-  // Build where clause for the Saving model
   const savingWhere = {};
   if (status !== "all") savingWhere.status = status;
 
-  // Build where clause for the Member association (name search)
   const memberWhere = {};
   if (search) {
     memberWhere[Op.or] = [
       { firstName: { [Op.like]: `%${search}%` } },
       { lastName:  { [Op.like]: `%${search}%` } },
     ];
-    // Also match on account number
     savingWhere[Op.or] = [
       { accountNumber: { [Op.like]: `%${search}%` } },
     ];
@@ -66,6 +48,7 @@ exports.getAllSavings = async ({ status, page, limit, search }) => {
     where:   savingWhere,
     include: [{
       model:      Member,
+      as:         "member",                                          // ✅ FIXED
       attributes: ["id", "firstName", "lastName", "memberNumber", "phone"],
       where:      Object.keys(memberWhere).length ? memberWhere : undefined,
       required:   !!search,
@@ -76,26 +59,23 @@ exports.getAllSavings = async ({ status, page, limit, search }) => {
   });
 
   return {
-    data:       rows,
+    data: rows,
     pagination: {
-      total:       count,
+      total:      count,
       page,
       limit,
-      totalPages:  Math.ceil(count / limit),
+      totalPages: Math.ceil(count / limit),
     },
   };
 };
 
 // ─── 2. Get Saving By ID ──────────────────────────────────────────────────────
 
-/**
- * Returns a single saving account with member details.
- * @param {number|string} id
- */
 exports.getSavingById = async (id) => {
   return Saving.findByPk(id, {
     include: [{
       model:      Member,
+      as:         "member",                                          // ✅ FIXED
       attributes: ["id", "firstName", "lastName", "memberNumber", "phone", "email"],
     }],
   });
@@ -103,24 +83,12 @@ exports.getSavingById = async (id) => {
 
 // ─── 3. Create Saving Account ─────────────────────────────────────────────────
 
-/**
- * Opens a new saving account for a member.
- * If initialDeposit > 0, records the first deposit transaction.
- *
- * @param {Object} body
- * @param {number} body.memberId
- * @param {string} body.accountType    — e.g. "regular" | "fixed" | "junior"
- * @param {number} body.initialDeposit — optional first deposit amount
- * @param {number} body.interestRate   — annual rate e.g. 0.08 for 8%
- */
 exports.createSaving = async (body) => {
   const { memberId, accountType, initialDeposit = 0, interestRate = 0.08 } = body;
 
-  // Confirm member exists
   const member = await Member.findByPk(memberId);
   if (!member) throw Object.assign(new Error("Member not found"), { status: 404 });
 
-  // Use a transaction to keep saving + first deposit atomic
   return sequelize.transaction(async (t) => {
     const saving = await Saving.create({
       memberId,
@@ -149,11 +117,6 @@ exports.createSaving = async (body) => {
 
 // ─── 4. Update Saving Account ─────────────────────────────────────────────────
 
-/**
- * Updates mutable fields on a saving account.
- * @param {number|string} id
- * @param {Object} body — { interestRate?, accountType?, status? }
- */
 exports.updateSaving = async (id, body) => {
   const saving = await Saving.findByPk(id);
   if (!saving) return null;
@@ -169,11 +132,6 @@ exports.updateSaving = async (id, body) => {
 
 // ─── 5. Delete (Close) Saving Account ────────────────────────────────────────
 
-/**
- * Closes a saving account.
- * Throws if balance is not zero — money must be withdrawn first.
- * @param {number|string} id
- */
 exports.deleteSaving = async (id) => {
   const saving = await Saving.findByPk(id);
   if (!saving) throw Object.assign(new Error("Saving account not found"), { status: 404 });
@@ -192,15 +150,6 @@ exports.deleteSaving = async (id) => {
 
 // ─── 6. Deposit ───────────────────────────────────────────────────────────────
 
-/**
- * Records a deposit and updates the account balance atomically.
- * @param {number|string} id   — saving account id
- * @param {Object} body
- * @param {number} body.amount
- * @param {string} body.paymentMethod — "cash" | "mobile_money" | "bank_transfer"
- * @param {string} body.reference     — optional external reference
- * @param {string} body.notes         — optional notes
- */
 exports.deposit = async (id, body) => {
   const { amount, paymentMethod, reference, notes } = body;
 
@@ -239,16 +188,6 @@ exports.deposit = async (id, body) => {
 
 // ─── 7. Withdraw ──────────────────────────────────────────────────────────────
 
-/**
- * Records a withdrawal and updates the account balance atomically.
- * Rejects if requested amount exceeds available balance.
- * @param {number|string} id   — saving account id
- * @param {Object} body
- * @param {number} body.amount
- * @param {string} body.paymentMethod
- * @param {string} body.reference
- * @param {string} body.notes
- */
 exports.withdraw = async (id, body) => {
   const { amount, paymentMethod, reference, notes } = body;
 
@@ -293,16 +232,6 @@ exports.withdraw = async (id, body) => {
 
 // ─── 8. Get Transactions ──────────────────────────────────────────────────────
 
-/**
- * Returns paginated transaction history for a saving account.
- * @param {number|string} id   — saving account id
- * @param {Object} options
- * @param {string} options.type  — "deposit" | "withdrawal" | "all"
- * @param {string} options.from  — YYYY-MM-DD
- * @param {string} options.to    — YYYY-MM-DD
- * @param {number} options.page
- * @param {number} options.limit
- */
 exports.getTransactions = async (id, { type, from, to, page, limit }) => {
   const offset = (page - 1) * limit;
 
@@ -329,18 +258,11 @@ exports.getTransactions = async (id, { type, from, to, page, limit }) => {
 
 // ─── 9. Get Statement ─────────────────────────────────────────────────────────
 
-/**
- * Returns a full account statement for a date range — account details,
- * opening balance, all transactions, and closing balance.
- * @param {number|string} id
- * @param {Object} options
- * @param {string} options.from — YYYY-MM-DD
- * @param {string} options.to   — YYYY-MM-DD
- */
 exports.getStatement = async (id, { from, to }) => {
   const saving = await Saving.findByPk(id, {
     include: [{
       model:      Member,
+      as:         "member",                                          // ✅ FIXED
       attributes: ["id", "firstName", "lastName", "memberNumber", "phone", "email"],
     }],
   });
@@ -352,13 +274,12 @@ exports.getStatement = async (id, { from, to }) => {
     order: [["createdAt", "ASC"]],
   });
 
-  // Derive opening balance — balance before the first tx in range
   const openingBalance = transactions.length > 0
     ? transactions[0].balanceAfter - transactions[0].amount *
       (transactions[0].type === "withdrawal" ? -1 : 1)
     : saving.balance;
 
-  const totalDeposits    = transactions
+  const totalDeposits = transactions
     .filter((t) => t.type === "deposit")
     .reduce((sum, t) => sum + parseFloat(t.amount), 0);
 
@@ -380,10 +301,6 @@ exports.getStatement = async (id, { from, to }) => {
 
 // ─── 10. Get Savings By Member ────────────────────────────────────────────────
 
-/**
- * Returns all saving accounts belonging to a member.
- * @param {number|string} memberId
- */
 exports.getSavingsByMember = async (memberId) => {
   const member = await Member.findByPk(memberId, {
     attributes: ["id", "firstName", "lastName", "memberNumber"],
@@ -399,5 +316,3 @@ exports.getSavingsByMember = async (memberId) => {
 
   return { member, savings, totalBalance };
 };
-
-

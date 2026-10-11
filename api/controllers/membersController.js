@@ -7,6 +7,24 @@
 
 const membersService = require("../services/membersService");
 
+// ─── GET /api/members/dashboard ──────────────────────────────────────────────
+exports.getMemberDashboard = async (req, res, next) => {
+  try {
+    const { year, page, pageSize } = req.query;
+
+    // Calls your service layer, mirroring the style of the other endpoints
+    const data = await membersService.getMemberDashboard({
+      year,
+      page: page ? parseInt(page) : 1,
+      pageSize: pageSize ? parseInt(pageSize) : 20,
+    });
+
+    return res.status(200).json({ success: true, ...data });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // ─── GET /api/members ─────────────────────────────────────────────────────────
 exports.getAllMembers = async (req, res, next) => {
   try {
@@ -174,6 +192,3 @@ exports.getMemberStats = async (req, res, next) => {
     res.json({ success: true, data });
   } catch (err) { next(err); }
 };
-
-
-

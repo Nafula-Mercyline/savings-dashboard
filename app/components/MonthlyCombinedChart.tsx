@@ -2,7 +2,7 @@
 
 import {
     ResponsiveContainer,
-    BarChart,
+    ComposedChart, // Updated to ComposedChart for cleaner Bar + Line mixing
     Bar,
     Line,
     XAxis,
@@ -51,16 +51,18 @@ export default function MonthlyCombinedChart() {
 
                 <ResponsiveContainer>
 
-                    <BarChart data={enrichedData}>
+                    {/* Changed from BarChart to ComposedChart */}
+                    <ComposedChart data={enrichedData}>
 
                         <CartesianGrid strokeDasharray="3 3" />
 
                         <XAxis dataKey="month" />
                         <YAxis />
 
+                        {/* Fixed the formatter argument type error here */}
                         <Tooltip
-                            formatter={(value: number) =>
-                                `UGX ${value.toLocaleString()}`
+                            formatter={(value: any) =>
+                                `UGX ${Number(value).toLocaleString()}`
                             }
                         />
 
@@ -81,9 +83,10 @@ export default function MonthlyCombinedChart() {
                             stroke="#2563eb"
                             strokeWidth={3}
                             name="Total Savings"
+                            dot={false}
                         />
 
-                    </BarChart>
+                    </ComposedChart>
 
                 </ResponsiveContainer>
 

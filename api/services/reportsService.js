@@ -176,7 +176,7 @@ exports.getSavingsReport = async ({ period, from, to }) => {
     // Top 10 accounts by balance
     Saving.findAll({
       where:   { status: "active" },
-      include: [{ model: Member, attributes: ["firstName", "lastName", "memberNumber"] }],
+      include: [{ model: Member, as: "member", attributes: ["firstName", "lastName", "memberNumber"] }],
       order:   [["balance", "DESC"]],
       limit:   10,
     }),
@@ -203,8 +203,8 @@ exports.getSavingsReport = async ({ period, from, to }) => {
       accountNumber: s.accountNumber,
       accountType:   s.accountType,
       balance:       fmt(s.balance),
-      member:        s.Member
-        ? `${s.Member.firstName} ${s.Member.lastName} (${s.Member.memberNumber})`
+      member:        s.member
+        ? `${s.member.firstName} ${s.member.lastName} (${s.member.memberNumber})`
         : "N/A",
     })),
   };
@@ -243,7 +243,7 @@ exports.getLoansReport = async ({ period, from, to }) => {
 
     Loan.findAll({
       where:   { status: "active", dueDate: { [Op.lt]: now } },
-      include: [{ model: Member, attributes: ["firstName", "lastName", "phone", "memberNumber"] }],
+      include: [{ model: Member, as: "member", attributes: ["firstName", "lastName", "phone", "memberNumber"] }],
       order:   [["dueDate", "ASC"]],
       limit:   10,
     }),
@@ -251,7 +251,7 @@ exports.getLoansReport = async ({ period, from, to }) => {
     // Top 10 borrowers by outstanding balance
     Loan.findAll({
       where:   { status: "active" },
-      include: [{ model: Member, attributes: ["firstName", "lastName", "memberNumber"] }],
+      include: [{ model: Member, as: "member", attributes: ["firstName", "lastName", "memberNumber"] }],
       order:   [["balance", "DESC"]],
       limit:   10,
     }),
@@ -299,16 +299,16 @@ exports.getLoansReport = async ({ period, from, to }) => {
       balance:   fmt(l.balance),
       dueDate:   l.dueDate,
       daysOverdue: Math.floor((now - new Date(l.dueDate)) / 86400000),
-      member:    l.Member
-        ? `${l.Member.firstName} ${l.Member.lastName} — ${l.Member.phone}`
+      member:    l.member
+        ? `${l.member.firstName} ${l.member.lastName} — ${l.member.phone}`
         : "N/A",
     })),
     topBorrowers: topBorrowers.map((l) => ({
       reference:   l.reference,
       principal:   fmt(l.principal),
       balance:     fmt(l.balance),
-      member:      l.Member
-        ? `${l.Member.firstName} ${l.Member.lastName} (${l.Member.memberNumber})`
+      member:      l.member
+        ? `${l.member.firstName} ${l.member.lastName} (${l.member.memberNumber})`
         : "N/A",
     })),
   };
@@ -479,6 +479,7 @@ exports.getArrearsReport = async ({ agingBucket }) => {
     where:   { status: "active", dueDate: { [Op.lt]: now } },
     include: [{
       model:      Member,
+      as:         "member",
       attributes: ["id", "firstName", "lastName", "memberNumber", "phone", "email"],
     }],
     order:   [["dueDate", "ASC"]],
@@ -496,12 +497,12 @@ exports.getArrearsReport = async ({ agingBucket }) => {
       balance:     fmt(loan.balance),
       dueDate:     loan.dueDate,
       daysOverdue: days,
-      member: loan.Member
+      member: loan.member
         ? {
-            name:         `${loan.Member.firstName} ${loan.Member.lastName}`,
-            memberNumber: loan.Member.memberNumber,
-            phone:        loan.Member.phone,
-            email:        loan.Member.email,
+            name:         `${loan.member.firstName} ${loan.member.lastName}`,
+            memberNumber: loan.member.memberNumber,
+            phone:        loan.member.phone,
+            email:        loan.member.email,
           }
         : null,
     };
@@ -649,7 +650,30 @@ exports.getCashFlowReport = async ({ period, from, to }) => {
   };
 };
 
-// ─── 10. Export Report ────────────────────────────────────────────────────────
+// ─── 10. Combined "All Reports" ───────────────────────────────────────────────
+
+/**
+ * Runs every period-based report in parallel and returns them keyed by name.
+ * Used when the export/report endpoint receives report=all.
+ */
+async function getAllReportsCombined({ period, from, to, groupBy }) {
+  const [financial, savings, loans, interest, members, transactions, cashflow] =
+    await Promise.all([
+      exports.getFinancialReport({ period, from, to }),
+      exports.getSavingsReport({ period, from, to }),
+      exports.getLoansReport({ period, from, to }),
+      exports.getInterestReport({ period, from, to }),
+      exports.getMembersReport({ period, from, to }),
+      exports.getTransactionsReport({ period, from, to, groupBy }),
+      exports.getCashFlowReport({ period, from, to }),
+    ]);
+
+  return { financial, savings, loans, interest, members, transactions, cashflow };
+}
+
+exports.getAllReportsCombined = getAllReportsCombined;
+
+// ─── 11. Export Report ────────────────────────────────────────────────────────
 
 /**
  * Generates a named report and serialises it as CSV or Excel.
@@ -665,6 +689,7 @@ exports.exportReport = async ({ report, format, period, from, to, groupBy }) => 
     transactions: exports.getTransactionsReport,
     arrears:      exports.getArrearsReport,
     cashflow:     exports.getCashFlowReport,
+    all:          getAllReportsCombined,
   };
 
   const generator = reportMap[report];
@@ -679,10 +704,21 @@ exports.exportReport = async ({ report, format, period, from, to, groupBy }) => 
   if (format === "excel") {
     try {
       const XLSX = require("xlsx");
-      const flat = Array.isArray(data) ? data : [data];
-      const ws   = XLSX.utils.json_to_sheet(flat);
       const wb   = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, report);
+
+      if (report === "all") {
+        // One sheet per sub-report
+        Object.entries(data).forEach(([key, val]) => {
+          const rows = Array.isArray(val) ? val : [val];
+          const ws   = XLSX.utils.json_to_sheet(rows);
+          XLSX.utils.book_append_sheet(wb, ws, key.slice(0, 31)); // sheet names max 31 chars
+        });
+      } else {
+        const flat = Array.isArray(data) ? data : [data];
+        const ws   = XLSX.utils.json_to_sheet(flat);
+        XLSX.utils.book_append_sheet(wb, ws, report);
+      }
+
       const content = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
       return {
         content,
@@ -705,6 +741,20 @@ exports.exportReport = async ({ report, format, period, from, to, groupBy }) => 
   }
 
   // Default: CSV
+  if (report === "all") {
+    // Multi-section CSV: one block per sub-report, headed by its name
+    const sections = Object.entries(data).map(([key, val]) => {
+      const rows = Array.isArray(val) ? val : [val];
+      return `# ${key.toUpperCase()}\n${toCSV(rows)}`;
+    });
+    const content = sections.join("\n\n");
+    return {
+      content,
+      filename:    `${filename}.csv`,
+      contentType: "text/csv",
+    };
+  }
+
   const flat    = Array.isArray(data) ? data : [data];
   const content = toCSV(flat);
   return {
@@ -714,7 +764,7 @@ exports.exportReport = async ({ report, format, period, from, to, groupBy }) => 
   };
 };
 
-// ─── 11. Scheduled Reports ────────────────────────────────────────────────────
+// ─── 12. Scheduled Reports ────────────────────────────────────────────────────
 
 exports.getScheduledReports = async () => {
   return ScheduledReport.findAll({ order: [["createdAt", "DESC"]] });
@@ -742,5 +792,3 @@ exports.deleteScheduledReport = async (id) => {
   if (!record) throw Object.assign(new Error("Scheduled report not found"), { status: 404 });
   await record.destroy();
 };
-
-

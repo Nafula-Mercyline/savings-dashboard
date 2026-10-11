@@ -8,168 +8,235 @@
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import { login, forgotPassword } from "../../lib/api/authService";
+import {
+  Landmark,
+  Mail,
+  Lock,
+  Eye,
+  EyeOff,
+  ShieldCheck,
+  ArrowLeft,
+  Loader2,
+  AlertTriangle,
+  CheckCircle2,
+} from "lucide-react";
 
 type AuthMode = "login" | "forgot-password";
 
-// Define response shape to fix the TypeScript "does not exist" errors
 interface ApiResponse {
-    success: boolean;
-    message?: string;
-    token?: string;
-    user?: any;
+  success: boolean;
+  message?: string;
+  token?: string;
+  user?: any;
 }
 
 export default function LoginPage() {
-    const router = useRouter();
+  const router = useRouter();
 
-    // UI State management 
-    const [mode, setMode] = useState<AuthMode>("login");
+  const [mode, setMode] = useState<AuthMode>("login");
 
-    // 🔄 Auto-filled credentials configured for easier local development testing
-    const [email, setEmail] = useState("member@sacco-domain.com");
-    const [password, setPassword] = useState("SaccoSecure2026!");
+  // Default email matches the admin account in the users table (role: admin),
+  // so the account that signs in already has the role needed to reach /settings.
+  // Password is left blank on purpose — never ship a real password pre-filled in source.
+  const [email, setEmail] = useState("admin@savings-sacco.ug");
+  const [password, setPassword] = useState("");
 
-    // Status feedback states
-    const [error, setError] = useState<string | null>(null);
-    const [successMessage, setSuccessMessage] = useState<string | null>(null);
-    const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
-    // Core submit interceptor
-    const handleSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
-        setError(null);
-        setSuccessMessage(null);
-        setLoading(true);
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSuccessMessage(null);
+    setLoading(true);
 
-        try {
-            if (mode === "login") {
-                const response = await login(email, password) as ApiResponse;
+    try {
+      if (mode === "login") {
+        const response = (await login(email.trim().toLowerCase(), password)) as ApiResponse;
 
-                if (response && response.success) {
-                    router.push("/dashboard");
-                    router.refresh();
-                } else {
-                    setError(response?.message || "Invalid credentials. Please verify your member email and password.");
-                }
-            } else {
-                // Correctly calling updated forgotPassword service function
-                const response = await forgotPassword(email) as ApiResponse;
-
-                if (response && response.success) {
-                    setSuccessMessage(response.message || "Password recovery instructions have been sent to your registered email address.");
-                    setEmail("");
-                } else {
-                    setError(response?.message || "Unable to process password recovery. Please contact SACCO support.");
-                }
-            }
-        } catch (err: any) {
-            console.error(`[SACCO Auth Error during ${mode.toUpperCase()}]:`, err);
-
-            if (err.message?.includes("404") || err.message?.includes("Route not found")) {
-                setError("Connection Error: The authentication service endpoint could not be reached. Please verify the backend API server is fully running.");
-            } else {
-                setError(err.message || "An unexpected network error occurred. Please try again or contact management.");
-            }
-        } finally {
-            setLoading(false);
+        if (response && response.success) {
+          router.push("/dashboard");
+          router.refresh();
+        } else {
+          setError(
+            response?.message ||
+            "Invalid credentials. Please verify your member email and password."
+          );
         }
-    };
+      } else {
+        const response = (await forgotPassword(email.trim().toLowerCase())) as ApiResponse;
 
-    const toggleMode = () => {
-        setMode((prev) => (prev === "login" ? "forgot-password" : "login"));
-        setError(null);
-        setSuccessMessage(null);
-    };
+        if (response && response.success) {
+          setSuccessMessage(
+            response.message ||
+            "Password recovery instructions have been sent to your registered email address."
+          );
+          setEmail("");
+        } else {
+          setError(
+            response?.message ||
+            "Unable to process password recovery. Please contact SACCO support."
+          );
+        }
+      }
+    } catch (err: any) {
+      console.error(`[SACCO Auth Error during ${mode.toUpperCase()}]:`, err);
 
-    return (
-        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "100vh", background: "linear-gradient(135deg, #090d16 0%, #111827 100%)", fontFamily: "system-ui, -apple-system, sans-serif", padding: "1rem" }}>
-            <form onSubmit={handleSubmit} style={{ background: "#ffffff", padding: "3rem 2.5rem", borderRadius: "12px", boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.5)", width: "100%", maxWidth: "420px" }}>
+      if (err.message?.includes("404") || err.message?.includes("Route not found")) {
+        setError(
+          "Connection error: the authentication service endpoint could not be reached. Please verify the backend API server is running."
+        );
+      } else {
+        setError(err.message || "An unexpected network error occurred. Please try again.");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
 
-                {/* SACCO Branding Header */}
-                <div style={{ textAlign: "center", marginBottom: "2rem" }}>
-                    <div style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: "48px", height: "48px", borderRadius: "50%", background: "#e0f2fe", color: "#0369a1", fontWeight: "bold", fontSize: "1.25rem", marginBottom: "0.75rem" }}>
-                        🏛️
-                    </div>
-                    <h2 style={{ margin: "0 0 0.5rem 0", color: "#0f172a", fontWeight: 700, fontSize: "1.5rem", letterSpacing: "-0.025em" }}>
-                        {mode === "login" ? "SACCO Member Portal" : "Forgot Password"}
-                    </h2>
-                    <p style={{ color: "#64748b", fontSize: "0.875rem", margin: 0, lineHeight: "1.5" }}>
-                        {mode === "login" ? "Securely sign in to manage your savings, dividends, and loans" : "Provide your registered email to locate your member account"}
-                    </p>
-                </div>
+  const toggleMode = () => {
+    setMode((prev) => (prev === "login" ? "forgot-password" : "login"));
+    setError(null);
+    setSuccessMessage(null);
+  };
 
-                {/* Error Feedback Panel */}
-                {error && (
-                    <div style={{ background: "#fef2f2", color: "#991b1b", padding: "0.875rem", borderRadius: "6px", marginBottom: "1.25rem", fontSize: "0.85rem", borderLeft: "4px solid #dc2626", lineHeight: "1.5" }}>
-                        <strong>System Error:</strong> {error}
-                    </div>
-                )}
+  const inputCls =
+    "w-full bg-gray-50 border border-gray-200 rounded-xl pl-10 pr-3 py-3 text-sm text-gray-800 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100 transition placeholder-gray-400";
 
-                {/* Success Feedback Panel */}
-                {successMessage && (
-                    <div style={{ background: "#f0fdf4", color: "#166534", padding: "0.875rem", borderRadius: "6px", marginBottom: "1.25rem", fontSize: "0.85rem", borderLeft: "4px solid #16a34a", lineHeight: "1.5" }}>
-                        <strong>Success:</strong> {successMessage}
-                    </div>
-                )}
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-950 px-4 py-10 relative overflow-hidden">
+      {/* Ambient background accent */}
+      <div className="pointer-events-none absolute -top-32 -left-24 w-96 h-96 rounded-full bg-amber-500/10 blur-3xl" />
+      <div className="pointer-events-none absolute bottom-0 right-0 w-[28rem] h-[28rem] rounded-full bg-amber-400/5 blur-3xl" />
 
-                {/* Registered Email Input */}
-                <div style={{ marginBottom: "1.25rem" }}>
-                    <label style={{ display: "block", marginBottom: "0.5rem", color: "#334155", fontSize: "0.875rem", fontWeight: 600 }}>Registered Email</label>
-                    <input
-                        type="email"
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        required
-                        style={{ width: "100%", padding: "0.75rem 0.875rem", border: "1px solid #cbd5e1", borderRadius: "6px", fontSize: "0.95rem", color: "#0f172a", outlineColor: "#0284c7", boxSizing: "border-box" }}
-                        placeholder="member@sacco-domain.com"
-                    />
-                </div>
-
-                {/* Password Input Block */}
-                {mode === "login" && (
-                    <div style={{ marginBottom: "0.75rem" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
-                            <label style={{ color: "#334155", fontSize: "0.875rem", fontWeight: 600 }}>Account Password</label>
-                            <button type="button" onClick={toggleMode} style={{ background: "none", border: "none", color: "#0284c7", fontSize: "0.85rem", fontWeight: 500, cursor: "pointer", padding: 0 }}>
-                                Forgot Password?
-                            </button>
-                        </div>
-                        <input
-                            type="password"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            required={mode === "login"}
-                            style={{ width: "100%", padding: "0.75rem 0.875rem", border: "1px solid #cbd5e1", borderRadius: "6px", fontSize: "0.95rem", color: "#0f172a", outlineColor: "#0284c7", boxSizing: "border-box" }}
-                            placeholder="••••••••"
-                        />
-                    </div>
-                )}
-
-                {/* Security Compliance Disclaimer Note */}
-                {mode === "login" && (
-                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "1rem", color: "#64748b", fontSize: "0.75rem" }}>
-                        🔒 <span>Authorized access only. All operations are strictly audited.</span>
-                    </div>
-                )}
-
-                {/* Form Submission Button */}
-                <button
-                    type="submit"
-                    disabled={loading}
-                    style={{ width: "100%", padding: "0.875rem", background: loading ? "#94a3b8" : "#0284c7", color: "#ffffff", border: "none", borderRadius: "6px", fontWeight: 600, fontSize: "1rem", cursor: loading ? "not-allowed" : "pointer", marginTop: "1.75rem", transition: "background 0.2s ease", boxShadow: "0 4px 6px -1px rgba(2, 132, 199, 0.2)" }}
-                >
-                    {loading ? "Verifying Credentials..." : mode === "login" ? "Secure Sign In" : "Request Reset Authorization"}
-                </button>
-
-                {/* Mode Toggle Footer Switch */}
-                {mode === "forgot-password" && (
-                    <div style={{ marginTop: "1.5rem", textAlign: "center" }}>
-                        <button type="button" onClick={toggleMode} style={{ background: "none", border: "none", color: "#475569", fontSize: "0.875rem", fontWeight: 500, cursor: "pointer", textDecoration: "underline" }}>
-                            Return to Member Sign In
-                        </button>
-                    </div>
-                )}
-            </form>
+      <div className="w-full max-w-md relative">
+        {/* Brand mark, outside the card */}
+        <div className="flex flex-col items-center mb-6">
+          <div className="w-12 h-12 rounded-2xl bg-amber-500 flex items-center justify-center shadow-lg shadow-amber-500/20">
+            <Landmark size={22} className="text-white" />
+          </div>
+          <p className="mt-3 text-sm font-semibold text-gray-300 tracking-wide">
+            Nurses Quatres Savings &amp; Credit Co-op
+          </p>
         </div>
-    );
+
+        <form
+          onSubmit={handleSubmit}
+          className="bg-white rounded-3xl shadow-2xl shadow-black/40 border border-gray-100 p-8"
+        >
+          <div className="text-center mb-7">
+            <h1 className="text-xl font-bold text-gray-900 tracking-tight">
+              {mode === "login" ? "Member Portal Sign In" : "Reset Your Password"}
+            </h1>
+            <p className="text-gray-400 text-sm mt-1.5 leading-relaxed">
+              {mode === "login"
+                ? "Sign in to manage your savings, dividends, and loans"
+                : "Enter your registered email and we'll send reset instructions"}
+            </p>
+          </div>
+
+          {error && (
+            <div className="flex items-start gap-2.5 bg-red-50 border border-red-200 text-red-700 rounded-xl px-3.5 py-3 mb-5 text-sm">
+              <AlertTriangle size={16} className="flex-shrink-0 mt-0.5 text-red-500" />
+              <span>{error}</span>
+            </div>
+          )}
+
+          {successMessage && (
+            <div className="flex items-start gap-2.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl px-3.5 py-3 mb-5 text-sm">
+              <CheckCircle2 size={16} className="flex-shrink-0 mt-0.5 text-emerald-500" />
+              <span>{successMessage}</span>
+            </div>
+          )}
+
+          <div className="mb-4">
+            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">
+              Registered Email
+            </label>
+            <div className="relative">
+              <Mail size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                className={inputCls}
+                placeholder="admin@savings-sacco.ug"
+              />
+            </div>
+          </div>
+
+          {mode === "login" && (
+            <div className="mb-1">
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                  Password
+                </label>
+                <button
+                  type="button"
+                  onClick={toggleMode}
+                  className="text-xs font-medium text-amber-600 hover:text-amber-700"
+                >
+                  Forgot password?
+                </button>
+              </div>
+              <div className="relative">
+                <Lock size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required={mode === "login"}
+                  className={`${inputCls} pr-10`}
+                  placeholder="Enter your password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  tabIndex={-1}
+                >
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+            </div>
+          )}
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full mt-6 flex items-center justify-center gap-2 py-3 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:bg-gray-300 text-white font-semibold text-sm transition-colors shadow-sm shadow-amber-500/20"
+          >
+            {loading && <Loader2 size={16} className="animate-spin" />}
+            {loading
+              ? mode === "login"
+                ? "Signing in…"
+                : "Sending instructions…"
+              : mode === "login"
+                ? "Sign In"
+                : "Send Reset Instructions"}
+          </button>
+
+          {mode === "forgot-password" && (
+            <button
+              type="button"
+              onClick={toggleMode}
+              className="w-full mt-4 flex items-center justify-center gap-1.5 text-sm font-medium text-gray-500 hover:text-gray-700"
+            >
+              <ArrowLeft size={14} /> Back to sign in
+            </button>
+          )}
+
+          {mode === "login" && (
+            <div className="flex items-center justify-center gap-1.5 mt-6 pt-5 border-t border-gray-100 text-gray-400 text-xs">
+              <ShieldCheck size={13} />
+              <span>Authorized access only. All activity is audited.</span>
+            </div>
+          )}
+        </form>
+      </div>
+    </div>
+  );
 }

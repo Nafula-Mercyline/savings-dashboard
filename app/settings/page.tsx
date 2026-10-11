@@ -1,586 +1,373 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import settingsService from "@/lib/api/settingsService"; 
-
 import {
-  Building2, Bell, Shield, Database, Percent,
-  Users, Save, ChevronRight, Check, AlertTriangle,
-  Eye, EyeOff, Upload, RefreshCw, Trash2, Plus,
-  Globe, Mail, Phone, MapPin, Hash, Calendar, Download, Loader2
+  Wallet,
+  Database,
+  Users,
+  Download,
+  Upload,
+  RotateCcw,
+  Save,
+  ChevronRight,
+  CheckCircle,
+  AlertTriangle,
+  FileText,
 } from "lucide-react";
+import {
+  clearSavedData,
+  cloneSeed,
+  computeDashboard,
+  loadData,
+  money,
+  monthLabel,
+  normalizeData,
+  saveData,
+  type SaccoData,
+  type SaccoSettings,
+} from "@/lib/saccoData";
 
-// ── Types ────────────────────────────────────────────────────
-type SectionId = "organisation" | "rates" | "notifications" | "security" | "users" | "data";
+/* ------------------------------------------------------------------ */
+/*  Look & feel (same as the dashboard page)                           */
+/* ------------------------------------------------------------------ */
 
-// ── Sub-components ───────────────────────────────────────────
-function Toggle({ on, onToggle, disabled }: { on: boolean; onToggle: () => void; disabled?: boolean }) {
+const btnBase =
+  "inline-flex items-center justify-center gap-1.5 rounded-lg text-xs font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50";
+const btnPrimary = `${btnBase} bg-amber-500 px-3.5 py-2 text-slate-950 hover:bg-amber-400`;
+const btnGhost = `${btnBase} border border-slate-700 bg-slate-900 px-3.5 py-2 text-slate-300 hover:bg-slate-800`;
+const btnDanger = `${btnBase} border border-rose-500/30 bg-rose-500/10 px-3.5 py-2 text-rose-400 hover:bg-rose-500/20`;
+const inputCls =
+  "w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-600 focus:border-amber-500/60 focus:outline-none";
+
+const num = (s: string) => (s.trim() === "" ? 0 : Number(s.replace(/,/g, "")));
+const fmtShares = (n: number) => (Number.isInteger(n) ? money(n) : n.toFixed(1));
+
+type SectionId = "rules" | "overview" | "data";
+
+function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
-    <button 
-      onClick={onToggle} 
-      type="button"
-      aria-pressed={on}
-      disabled={disabled}
-      className={`relative w-11 h-6 rounded-full transition-colors duration-200 focus:outline-none ${on ? "bg-amber-500" : "bg-gray-200"} ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
-    >
-      <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${on ? "translate-x-5" : "translate-x-0"}`} />
-    </button>
+    <label className="block">
+      <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-500">{label}</span>
+      {children}
+      {hint ? <span className="mt-1 block text-[10px] text-slate-500">{hint}</span> : null}
+    </label>
   );
 }
 
-function FormField({ label, icon: Icon, children }: { label: string; icon?: any; children: React.ReactNode }) {
-  return (
-    <div>
-      <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">{label}</label>
-      <div className="relative">
-        {Icon && <Icon size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />}
-        <div className={Icon ? "[&>input]:pl-9 [&>select]:pl-9" : ""}>{children}</div>
-      </div>
-    </div>
-  );
+function saveFile(name: string, text: string, mime: string) {
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([text], { type: mime }));
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
 }
 
-const inputCls = "w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-800 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100 transition placeholder-gray-400 disabled:opacity-60";
-const selectCls = "w-full bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-800 outline-none focus:border-amber-400 transition disabled:opacity-60";
+const csvCell = (v: string | number) => (typeof v === "number" ? String(v) : `"${v.replace(/"/g, '""')}"`);
+const toCsv = (header: string[], rows: (string | number)[][]) =>
+  [header.map(csvCell).join(","), ...rows.map((r) => r.map(csvCell).join(","))].join("\n");
 
-// ── Page ─────────────────────────────────────────────────────
+/* ------------------------------------------------------------------ */
+/*  Page                                                               */
+/* ------------------------------------------------------------------ */
+
 export default function SettingsPage() {
-  const [active, setActive] = useState<SectionId>("organisation");
-  const [loading, setLoading] = useState<boolean>(true);
-  const [saving, setSaving] = useState<boolean>(false);
-  const [saved, setSaved] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
+  const [data, setData] = useState<SaccoData | null>(null);
+  const [active, setActive] = useState<SectionId>("rules");
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const [saveFailed, setSaveFailed] = useState(false);
 
-  // Consolidated Form State matching API fields
-  const [orgSettings, setOrgSettings] = useState({
-    name: "Kampala Savings & Credit Co-op",
-    registrationNumber: "SACCO-UG-20180042",
-    email: "admin@kampala-sacco.ug",
-    phone: "+256 414 000 000",
-    website: "https://kampala-sacco.ug",
-    address: "Plot 14, Kampala Road, Kampala",
-    financialYearEnd: "December 31",
-    currency: "UGX — Ugandan Shilling",
-    minShareCapital: "50000",
-    maxLoanMultiplier: "3",
-    loanProcessingFee: "1.5"
-  });
+  // the form is kept as text while it is being typed
+  const [form, setForm] = useState({ shareValue: "", opening: "", payout: "", start: "", months: "" });
+  const [formErr, setFormErr] = useState("");
 
-  const [notifs, setNotifs] = useState({
-    loanOverdue: true,
-    newMember: true,
-    largeWithdrawal: false,
-    monthlyReport: true,
-    failedTxn: true,
-    dailySummary: false,
-    loanApproval: true,
-    memberBirthday: false,
-    notifyEmail: "admin@kampala-sacco.ug",
-    notifyPhone: "+256 414 000 000"
-  });
+  const fillForm = (s: SaccoSettings) =>
+    setForm({
+      shareValue: String(s.shareValue),
+      opening: String(s.openingBalance),
+      payout: String(+(s.payoutRate * 100).toFixed(2)),
+      start: s.cycleStart,
+      months: String(s.cycleMonths),
+    });
 
-  const [rates, setRates] = useState({
-    regularSavings: "5.0", fixedDeposit: "9.0",
-    holidaySavings: "4.0", juniorSavings: "3.0",
-    personalLoan: "18.0", businessLoan: "15.5",
-    emergencyLoan: "12.0", educationLoan: "10.0",
-  });
-
-  const [securitySettings, setSecuritySettings] = useState({
-    sessionTimeout: "1 hour",
-    maxFailedLogins: "5",
-    ipAllowlist: ""
-  });
-
-  const [showPass, setShowPass] = useState(false);
-
-  // Fetch settings parameters dynamically on mount
   useEffect(() => {
-    async function loadData() {
-      try {
-        setLoading(true);
-        setError(null);
-        
-        const [allData, publicData, financialData] = await Promise.all([
-          settingsService.getAllSettings("all"),
-          settingsService.getPublicSettings(),
-          settingsService.getFinancialSettings()
-        ]);
-
-        if (allData) {
-          if (allData.organisation) setOrgSettings(prev => ({ ...prev, ...allData.organisation }));
-          if (allData.rates) setRates(prev => ({ ...prev, ...allData.rates }));
-          if (allData.notifications) setNotifs(prev => ({ ...prev, ...allData.notifications }));
-          if (allData.security) setSecuritySettings(prev => ({ ...prev, ...allData.security }));
-        }
-      } catch (err: any) {
-        setError(err?.message || "Failed to download system configurations.");
-      } finally {
-        setLoading(false);
-      }
-    }
-    loadData();
+    const d = loadData();
+    setData(d);
+    fillForm(d.settings);
   }, []);
 
-  // Centralized Mutation Handler
-  const handleSave = async () => {
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 4000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
+  const dash = useMemo(() => (data ? computeDashboard(data, "all") : null), [data]);
+
+  if (!data || !dash) {
+    return (
+      <div className="flex min-h-[400px] items-center justify-center bg-slate-950">
+        <div className="h-10 w-10 animate-spin rounded-full border-2 border-amber-500 border-t-transparent" />
+      </div>
+    );
+  }
+
+  const apply = (next: SaccoData, text: string) => {
+    setData(next);
+    fillForm(next.settings);
+    setSaveFailed(!saveData(next));
+    setNotice({ ok: true, text });
+  };
+
+  const submitRules = (e: FormEvent) => {
+    e.preventDefault();
+    const sv = num(form.shareValue);
+    const op = num(form.opening);
+    const pr = num(form.payout);
+    const cm = num(form.months);
+    if (!Number.isFinite(sv) || sv <= 0) return setFormErr("A share must be worth more than 0.");
+    if (!Number.isFinite(op) || op < 0) return setFormErr("Opening balance must be 0 or more.");
+    if (!Number.isFinite(pr) || pr <= 0 || pr > 100) return setFormErr("Payout rate must be between 1% and 100%.");
+    if (!/^\d{4}-\d{2}$/.test(form.start)) return setFormErr("Choose the month the saving cycle starts.");
+    if (!Number.isInteger(cm) || cm < 1 || cm > 60) return setFormErr("The cycle must be between 1 and 60 months.");
+    setFormErr("");
+    apply(
+      {
+        ...data,
+        settings: { ...data.settings, shareValue: Math.round(sv), openingBalance: Math.round(op), payoutRate: pr / 100, cycleStart: form.start, cycleMonths: cm },
+      },
+      "Settings saved. Every page now uses them."
+    );
+  };
+
+  const s = data.settings;
+  const changed =
+    form.shareValue !== String(s.shareValue) ||
+    form.opening !== String(s.openingBalance) ||
+    form.payout !== String(+(s.payoutRate * 100).toFixed(2)) ||
+    form.start !== s.cycleStart ||
+    form.months !== String(s.cycleMonths);
+
+  const today = new Date().toISOString().slice(0, 10);
+  const months = dash.chart.map((p) => p.month);
+
+  const downloadBackup = () => saveFile(`savings-group-backup-${today}.json`, JSON.stringify(data, null, 2), "application/json");
+
+  const restore = async (file: File | undefined) => {
+    if (!file) return;
     try {
-      setSaving(true);
-      setError(null);
-
-      const updates = {
-        organisation: orgSettings,
-        rates,
-        notifications: notifs,
-        security: securitySettings
-      };
-
-      await settingsService.updateSettings(updates);
-      
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2500);
-    } catch (err: any) {
-      setError(err?.message || "Changes could not be updated successfully.");
-    } finally {
-      setSaving(false);
+      const parsed = normalizeData(JSON.parse(await file.text()));
+      if (!parsed) return setNotice({ ok: false, text: "That file isn't a backup from this dashboard." });
+      if (!window.confirm("Replace everything with the figures in this backup?")) return;
+      apply(parsed, "Backup restored.");
+    } catch {
+      setNotice({ ok: false, text: "Couldn't read that file." });
     }
   };
 
-  const navSections = [
-    { id: "organisation" as SectionId, icon: Building2, label: "Organisation",      desc: "Name, address & currency" },
-    { id: "rates"        as SectionId, icon: Percent,   label: "Interest Rates",      desc: "Savings & loan rates" },
-    { id: "notifications" as SectionId, icon: Bell,      label: "Notifications",      desc: "Alerts & email preferences" },
-    { id: "security"     as SectionId, icon: Shield,    label: "Security & Access",  desc: "Passwords, 2FA & sessions" },
-    { id: "users"        as SectionId, icon: Users,     label: "Users & Roles",      desc: "Staff accounts & permissions" },
-    { id: "data"         as SectionId, icon: Database,  label: "Data & Backup",      desc: "Backup schedule & exports" },
+  const reset = () => {
+    if (!window.confirm("Throw away all changes and go back to the figures from the savings workbook?")) return;
+    clearSavedData();
+    const fresh = cloneSeed();
+    setData(fresh);
+    fillForm(fresh.settings);
+    setSaveFailed(false);
+    setNotice({ ok: true, text: "Back to the workbook figures." });
+  };
+
+  const exportMembers = () =>
+    saveFile(
+      `members-${today}.csv`,
+      toCsv(
+        ["Member", "Phone", "Date joined", "Opening balance (UGX)", "Shares", "Savings (UGX)", "Owed (UGX)"],
+        dash.members.map((m) => [m.name, m.phone, data.members.find((x) => x.id === m.id)?.joined ?? "", m.opening, m.shares, m.saved, m.owed])
+      ),
+      "text/csv;charset=utf-8;"
+    );
+
+  const exportSavings = () =>
+    saveFile(
+      `savings-by-month-${today}.csv`,
+      toCsv(
+        ["Member", ...months.map(monthLabel)],
+        data.members.map((m) => [m.name, ...months.map((mo) => data.savings[m.id]?.[mo] ?? 0)])
+      ),
+      "text/csv;charset=utf-8;"
+    );
+
+  const exportLoans = () =>
+    saveFile(
+      `loans-${today}.csv`,
+      toCsv(
+        ["Member", "Month", "Lent (UGX)", "Monthly rate (%)", "Interest (UGX)", "To repay (UGX)", "Repaid (UGX)", "Still owed (UGX)"],
+        dash.loans.map((l) => [l.memberName, l.month ? monthLabel(l.month) : "Not set", l.principal, +(l.rate * 100).toFixed(2), l.interest, l.repayable, l.repaid, l.balance])
+      ),
+      "text/csv;charset=utf-8;"
+    );
+
+  const exportInterest = () =>
+    saveFile(
+      `interest-${today}.csv`,
+      toCsv(
+        ["Month", "Interest collected (UGX)"],
+        months.map((mo) => [monthLabel(mo), data.interest[mo] ?? 0])
+      ),
+      "text/csv;charset=utf-8;"
+    );
+
+  const monthsWithSavings = new Set(Object.values(data.savings).flatMap((row) => Object.entries(row).filter(([, v]) => v > 0).map(([m]) => m))).size;
+  const monthsWithInterest = Object.values(data.interest).filter((v) => v > 0).length;
+
+  const nav: { id: SectionId; icon: typeof Wallet; label: string; desc: string }[] = [
+    { id: "rules", icon: Wallet, label: "Savings rules", desc: "Share value, payout and cycle" },
+    { id: "overview", icon: Users, label: "Group overview", desc: "What is recorded so far" },
+    { id: "data", icon: Database, label: "Data & backup", desc: "Backup, restore and exports" },
   ];
+  const current = nav.find((n) => n.id === active)!;
 
-  // ── Section content views ──────────────────────────────────
-  const sectionContent: Record<SectionId, React.ReactNode> = {
-    organisation: (
-      <div className="space-y-6">
-        <div className="flex items-center gap-5 p-4 bg-gray-50 rounded-2xl border border-gray-200">
-          <div className="w-16 h-16 rounded-2xl bg-amber-100 border-2 border-amber-200 flex items-center justify-center text-amber-600 font-bold text-xl flex-shrink-0">
-            KSC
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-gray-700">Organisation Logo</p>
-            <p className="text-xs text-gray-400 mt-0.5">PNG or JPG, max 2MB. Appears on reports and receipts.</p>
-            <button type="button" className="mt-2 flex items-center gap-1.5 text-xs font-medium text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200 hover:bg-amber-100 transition-colors">
-              <Upload size={12} /> Upload Logo
-            </button>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          <FormField label="Organisation Name" icon={Building2}>
-            <input className={inputCls} value={orgSettings.name} onChange={e => setOrgSettings({ ...orgSettings, name: e.target.value })} />
-          </FormField>
-          <FormField label="Registration Number" icon={Hash}>
-            <input className={inputCls} value={orgSettings.registrationNumber} onChange={e => setOrgSettings({ ...orgSettings, registrationNumber: e.target.value })} />
-          </FormField>
-          <FormField label="Email Address" icon={Mail}>
-            <input className={inputCls} type="email" value={orgSettings.email} onChange={e => setOrgSettings({ ...orgSettings, email: e.target.value })} />
-          </FormField>
-          <FormField label="Phone Number" icon={Phone}>
-            <input className={inputCls} type="tel" value={orgSettings.phone} onChange={e => setOrgSettings({ ...orgSettings, phone: e.target.value })} />
-          </FormField>
-          <FormField label="Website" icon={Globe}>
-            <input className={inputCls} type="url" value={orgSettings.website} onChange={e => setOrgSettings({ ...orgSettings, website: e.target.value })} />
-          </FormField>
-          <FormField label="Physical Address" icon={MapPin}>
-            <input className={inputCls} value={orgSettings.address} onChange={e => setOrgSettings({ ...orgSettings, address: e.target.value })} />
-          </FormField>
-          <FormField label="Financial Year End" icon={Calendar}>
-            <select className={selectCls} value={orgSettings.financialYearEnd} onChange={e => setOrgSettings({ ...orgSettings, financialYearEnd: e.target.value })}>
-              <option>December 31</option>
-              <option>March 31</option>
-              <option>June 30</option>
-              <option>September 30</option>
-            </select>
-          </FormField>
-          <FormField label="Currency">
-            <select className={selectCls} value={orgSettings.currency} onChange={e => setOrgSettings({ ...orgSettings, currency: e.target.value })}>
-              <option>UGX — Ugandan Shilling</option>
-              <option>USD — US Dollar</option>
-              <option>KES — Kenyan Shilling</option>
-              <option>TZS — Tanzanian Shilling</option>
-            </select>
-          </FormField>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-          <FormField label="Minimum Share Capital (UGX)">
-            <input className={inputCls} type="number" value={orgSettings.minShareCapital} onChange={e => setOrgSettings({ ...orgSettings, minShareCapital: e.target.value })} />
-          </FormField>
-          <FormField label="Maximum Loan Multiplier">
-            <input className={inputCls} type="number" value={orgSettings.maxLoanMultiplier} onChange={e => setOrgSettings({ ...orgSettings, maxLoanMultiplier: e.target.value })} />
-          </FormField>
-          <FormField label="Loan Processing Fee (%)">
-            <input className={inputCls} type="number" step="0.1" value={orgSettings.loanProcessingFee} onChange={e => setOrgSettings({ ...orgSettings, loanProcessingFee: e.target.value })} />
-          </FormField>
-        </div>
-      </div>
-    ),
-
-    rates: (
-      <div className="space-y-8">
-        <div>
-          <div className="flex items-center gap-2 mb-4">
-            <span className="w-1 h-5 bg-amber-400 rounded-full" />
-            <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wide">Savings Products</h3>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {[
-              { label: "Regular Savings", key: "regularSavings" as const },
-              { label: "Fixed Deposit",   key: "fixedDeposit"  as const },
-              { label: "Holiday Savings", key: "holidaySavings" as const },
-              { label: "Junior Savings",  key: "juniorSavings" as const },
-            ].map((f) => (
-              <div key={f.key} className="bg-amber-50 border border-amber-100 rounded-2xl p-4">
-                <p className="text-xs font-semibold text-gray-500 mb-2">{f.label}</p>
-                <div className="flex items-center gap-1">
-                  <input
-                    className="w-20 bg-white border border-amber-200 rounded-lg px-2 py-1.5 text-lg font-bold text-amber-700 outline-none focus:border-amber-400 text-center font-mono"
-                    value={rates[f.key]}
-                    onChange={(e) => setRates(r => ({ ...r, [f.key]: e.target.value }))}
-                  />
-                  <span className="text-lg font-bold text-amber-600">%</span>
-                </div>
-                <p className="text-xs text-gray-400 mt-1">per annum</p>
-              </div>
-            ))}
+  const content: Record<SectionId, ReactNode> = {
+    rules: (
+      <form onSubmit={submitRules} className="space-y-5">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <Field label="Value of 1 share (UGX)" hint="Changing this changes the value of every share already bought">
+            <input className={inputCls} inputMode="numeric" value={form.shareValue} onChange={(e) => setForm({ ...form, shareValue: e.target.value })} />
+          </Field>
+          <Field label="Opening balance (UGX)" hint="Pre-filled when you add a new member">
+            <input className={inputCls} inputMode="numeric" value={form.opening} onChange={(e) => setForm({ ...form, opening: e.target.value })} />
+          </Field>
+          <Field label="Payout rate (%)" hint="Share of each member's net position paid out at the end">
+            <input className={inputCls} inputMode="decimal" value={form.payout} onChange={(e) => setForm({ ...form, payout: e.target.value })} />
+          </Field>
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Cycle starts">
+              <input className={inputCls} type="month" value={form.start} onChange={(e) => setForm({ ...form, start: e.target.value })} />
+            </Field>
+            <Field label="Length (months)">
+              <input className={inputCls} inputMode="numeric" value={form.months} onChange={(e) => setForm({ ...form, months: e.target.value })} />
+            </Field>
           </div>
         </div>
 
-        <div>
-          <div className="flex items-center gap-2 mb-4">
-            <span className="w-1 h-5 bg-blue-400 rounded-full" />
-            <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wide">Loan Products</h3>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {[
-              { label: "Personal Loan",  key: "personalLoan"  as const },
-              { label: "Business Loan",  key: "businessLoan"  as const },
-              { label: "Emergency Loan", key: "emergencyLoan" as const },
-              { label: "Education Loan", key: "educationLoan" as const },
-            ].map((f) => (
-              <div key={f.key} className="bg-blue-50 border border-blue-100 rounded-2xl p-4">
-                <p className="text-xs font-semibold text-gray-500 mb-2">{f.label}</p>
-                <div className="flex items-center gap-1">
-                  <input
-                    className="w-20 bg-white border border-blue-200 rounded-lg px-2 py-1.5 text-lg font-bold text-blue-700 outline-none focus:border-blue-400 text-center font-mono"
-                    value={rates[f.key]}
-                    onChange={(e) => setRates(r => ({ ...r, [f.key]: e.target.value }))}
-                  />
-                  <span className="text-lg font-bold text-blue-600">%</span>
-                </div>
-                <p className="text-xs text-gray-400 mt-1">per annum</p>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3">
-          <AlertTriangle size={16} className="text-amber-600 flex-shrink-0 mt-0.5" />
-          <p className="text-xs text-amber-700">
-            Rate changes take effect on the next billing cycle. Existing loan agreements are not retroactively affected. Contact your regulator if required by your licence terms.
+        <div className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-950/60 p-4 text-xs leading-relaxed text-slate-400">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0 text-amber-500" />
+          <p>
+            Loans in this group are charged a flat <span className="font-semibold text-slate-200">4% or 6% a month</span>. You choose the rate on each loan
+            when you add it, so there is no single loan rate to set here. Interest collected is shared between members by the shares they hold.
           </p>
         </div>
-      </div>
-    ),
 
-    notifications: (
-      <div className="space-y-1">
-        {[
-          { key: "loanOverdue"     as const, label: "Loan Overdue Alerts",      desc: "Notify when a repayment is more than 3 days past due",        badge: "Critical" },
-          { key: "failedTxn"       as const, label: "Failed Transaction Alerts",  desc: "Alert on every failed or reversed transaction",                badge: "Critical" },
-          { key: "newMember"       as const, label: "New Member Registration",    desc: "Notify when a new member application is submitted",            badge: null },
-          { key: "loanApproval"    as const, label: "Loan Approval Required",     desc: "Alert when a loan application is awaiting approval",           badge: null },
-          { key: "largeWithdrawal" as const, label: "Large Withdrawal Warning",   desc: "Alert when a single withdrawal exceeds UGX 5,000,000",         badge: null },
-          { key: "monthlyReport"   as const, label: "Monthly Report Ready",       desc: "Notify when the monthly financial statement is generated",      badge: null },
-          { key: "dailySummary"    as const, label: "Daily Summary Email",        desc: "Receive a daily summary of all transactions at 6:00 PM",       badge: null },
-          { key: "memberBirthday"  as const, label: "Member Birthday Reminders",  desc: "Send birthday greetings to members on their special day",      badge: null },
-        ].map((n) => (
-          <div key={n.key} className="flex items-center justify-between py-4 border-b border-gray-100 last:border-0">
-            <div className="flex-1 pr-6">
-              <div className="flex items-center gap-2">
-                <p className="text-sm font-semibold text-gray-800">{n.label}</p>
-                {n.badge && (
-                  <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">{n.badge}</span>
-                )}
-              </div>
-              <p className="text-xs text-gray-400 mt-0.5 leading-relaxed">{n.desc}</p>
-            </div>
-            <Toggle on={notifs[n.key]} onToggle={() => setNotifs(prev => ({ ...prev, [n.key]: !prev[n.key] }))} />
-          </div>
-        ))}
-
-        <div className="pt-4">
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Notification Delivery</p>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <FormField label="Notify Email">
-              <input className={inputCls} type="email" value={notifs.notifyEmail} onChange={e => setNotifs({ ...notifs, notifyEmail: e.target.value })} />
-            </FormField>
-            <FormField label="Notify Phone (SMS)">
-              <input className={inputCls} type="tel" value={notifs.notifyPhone} onChange={e => setNotifs({ ...notifs, notifyPhone: e.target.value })} />
-            </FormField>
-          </div>
-        </div>
-      </div>
-    ),
-
-    security: (
-      <div className="space-y-6">
-        <div>
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-4">Change Password</p>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <FormField label="Current Password">
-              <div className="relative">
-                <input className={inputCls} type={showPass ? "text" : "password"} placeholder="••••••••" />
-                <button type="button" onClick={() => setShowPass(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
-                  {showPass ? <EyeOff size={15} /> : <Eye size={15} />}
-                </button>
-              </div>
-            </FormField>
-            <FormField label="New Password">
-              <input className={inputCls} type="password" placeholder="••••••••" />
-            </FormField>
-            <FormField label="Confirm New Password">
-              <input className={inputCls} type="password" placeholder="••••••••" />
-            </FormField>
-          </div>
-        </div>
-
-        <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center justify-between">
-          <div className="flex items-start gap-3">
-            <Shield size={18} className="text-emerald-600 flex-shrink-0 mt-0.5" />
-            <div>
-              <p className="text-sm font-semibold text-emerald-800">Two-Factor Authentication</p>
-              <p className="text-xs text-emerald-600 mt-0.5">2FA is currently enabled for all admin accounts via SMS OTP.</p>
-            </div>
-          </div>
-          <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-700 bg-emerald-100 px-3 py-1.5 rounded-xl border border-emerald-200">
-            <Check size={12} /> Enabled
-          </span>
-        </div>
-
-        <div>
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-4">Session & Access Controls</p>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <FormField label="Session Timeout">
-              <select className={selectCls} value={securitySettings.sessionTimeout} onChange={e => setSecuritySettings({ ...securitySettings, sessionTimeout: e.target.value })}>
-                <option>15 minutes</option>
-                <option>30 minutes</option>
-                <option>1 hour</option>
-                <option>4 hours</option>
-              </select>
-            </FormField>
-            <FormField label="Max Failed Login Attempts">
-              <input className={inputCls} type="number" value={securitySettings.maxFailedLogins} onChange={e => setSecuritySettings({ ...securitySettings, maxFailedLogins: e.target.value })} />
-            </FormField>
-            <FormField label="IP Allowlist (optional)">
-              <input className={inputCls} placeholder="e.g. 192.168.1.0/24" value={securitySettings.ipAllowlist} onChange={e => setSecuritySettings({ ...securitySettings, ipAllowlist: e.target.value })} />
-            </FormField>
-          </div>
-        </div>
-
-        <div>
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Recent Admin Activity</p>
-          <div className="space-y-2">
-            {[
-              { action: "Login",             user: "James Doe",   time: "Today 09:14",    ip: "197.220.14.8" },
-              { action: "Rate Updated",      user: "James Doe",   time: "Yesterday 16:30",   ip: "197.220.14.8" },
-              { action: "Report Downloaded", user: "Sarah Kato",  time: "Dec 28, 11:05",     ip: "41.210.8.92" },
-              { action: "Member Suspended",  user: "James Doe",   time: "Dec 27, 14:22",     ip: "197.220.14.8" },
-            ].map((log, i) => (
-              <div key={i} className="flex items-center justify-between py-2.5 px-4 bg-gray-50 rounded-xl border border-gray-100 text-sm">
-                <div className="flex items-center gap-3">
-                  <span className="w-2 h-2 rounded-full bg-amber-400 flex-shrink-0" />
-                  <span className="font-medium text-gray-800">{log.action}</span>
-                  <span className="text-gray-400">by {log.user}</span>
-                </div>
-                <div className="flex items-center gap-4 text-xs text-gray-400">
-                  <span>{log.ip}</span>
-                  <span>{log.time}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    ),
-
-    users: (
-      <div className="space-y-5">
-        <div className="flex items-center justify-between">
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Staff Accounts</p>
-          <button type="button" className="flex items-center gap-1.5 text-xs font-medium text-white bg-amber-500 px-3 py-1.5 rounded-lg hover:bg-amber-600 transition-colors">
-            <Plus size={13} /> Add User
+        {formErr ? <p className="text-xs font-semibold text-rose-400">{formErr}</p> : null}
+        <div className="flex gap-2">
+          <button type="submit" className={btnPrimary} disabled={!changed}>
+            <Save size={13} /> Save changes
+          </button>
+          <button
+            type="button"
+            className={btnGhost}
+            disabled={!changed}
+            onClick={() => {
+              fillForm(data.settings);
+              setFormErr("");
+            }}
+          >
+            Undo
           </button>
         </div>
+      </form>
+    ),
 
-        <div className="space-y-2">
+    overview: (
+      <div className="space-y-5">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
           {[
-            { name: "James Doe",    email: "james@kampala-sacco.ug",  role: "Super Admin",   status: "Active",   color: "#c9a84c" },
-            { name: "Sarah Kato",   email: "sarah@kampala-sacco.ug",  role: "Loan Officer",  status: "Active",   color: "#3ecf8e" },
-            { name: "Moses Waiswa", email: "moses@kampala-sacco.ug",  role: "Teller",        status: "Active",   color: "#63b3ed" },
-            { name: "Ruth Namuli",  email: "ruth@kampala-sacco.ug",   role: "Accountant",    status: "Active",   color: "#a78bfa" },
-            { name: "Peter Onen",   email: "peter@kampala-sacco.ug",  role: "Loan Officer",  status: "Inactive", color: "#9ca3af" },
-          ].map((u, i) => {
-            const initials = u.name.split(" ").map(n => n[0]).join("");
-            return (
-              <div key={i} className="flex items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-100 hover:border-gray-200 transition-colors">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
-                    style={{ background: u.color + "22", color: u.color, border: `1.5px solid ${u.color}40` }}>
-                    {initials}
-                  </div>
-                  <div>
-                    <p className="text-sm font-semibold text-gray-800">{u.name}</p>
-                    <p className="text-xs text-gray-400">{u.email}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-xs font-medium text-gray-500 bg-white border border-gray-200 px-2.5 py-1 rounded-lg">{u.role}</span>
-                  <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
-                    u.status === "Active"
-                      ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                      : "bg-gray-100 text-gray-400 border border-gray-200"
-                  }`}>{u.status}</span>
-                  <button type="button" className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-200 rounded-lg transition-colors">
-                    <RefreshCw size={13} />
-                  </button>
-                  <button type="button" className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors">
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+            ["Group", "Nurses Quartres Savings Group"],
+            ["Members", money(data.members.length)],
+            ["Shares held", fmtShares(dash.kpi.shares)],
+            ["Months with savings", money(monthsWithSavings)],
+            ["Months with interest", money(monthsWithInterest)],
+            ["Loans recorded", money(data.loans.length)],
+          ].map(([k, v]) => (
+            <div key={k} className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{k}</p>
+              <p className="mt-1 break-words font-mono text-sm font-bold text-slate-100">{v}</p>
+            </div>
+          ))}
         </div>
-
-        <div>
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Role Permissions</p>
-          <div className="overflow-x-auto rounded-2xl border border-gray-100">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-gray-100 bg-gray-50">
-                  <th className="text-left py-3 px-4 font-semibold text-gray-500">Permission</th>
-                  {["Super Admin","Loan Officer","Accountant","Teller"].map(r => (
-                    <th key={r} className="py-3 px-4 font-semibold text-gray-500 text-center">{r}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {[
-                  { perm: "View Reports",      vals: [true,  true,  true,  false] },
-                  { perm: "Approve Loans",     vals: [true,  true,  false, false] },
-                  { perm: "Process Deposits",  vals: [true,  false, false, true ] },
-                  { perm: "Edit Rates",        vals: [true,  false, false, false] },
-                  { perm: "Manage Users",      vals: [true,  false, false, false] },
-                  { perm: "Export Data",       vals: [true,  true,  true,  false] },
-                ].map((row) => (
-                  <tr key={row.perm} className="hover:bg-gray-50/50">
-                    <td className="py-3 px-4 font-medium text-gray-700">{row.perm}</td>
-                    {row.vals.map((v, i) => (
-                      <td key={i} className="py-3 px-4 text-center">
-                        {v
-                          ? <Check size={14} className="text-emerald-500 mx-auto" />
-                          : <span className="text-gray-200 text-lg leading-none mx-auto block text-center">—</span>
-                        }
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        <div className="divide-y divide-slate-900 rounded-xl border border-slate-800 text-xs">
+          {[
+            ["Value of 1 share", `UGX ${money(s.shareValue)}`],
+            ["Opening balance", `UGX ${money(s.openingBalance)}`],
+            ["Payout rate", `${+(s.payoutRate * 100).toFixed(2)}%`],
+            ["Saving cycle", `${monthLabel(s.cycleStart)} for ${s.cycleMonths} months`],
+          ].map(([k, v]) => (
+            <div key={k} className="flex items-center justify-between px-4 py-3">
+              <span className="text-slate-400">{k}</span>
+              <span className="font-mono font-bold text-slate-100">{v}</span>
+            </div>
+          ))}
         </div>
+        <p className="text-[11px] text-slate-500">Edit members, savings, loans and interest on their own pages. Change the rules above in Savings rules.</p>
       </div>
     ),
 
     data: (
       <div className="space-y-6">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          {[
-            { label: "Last Backup",       value: "Jan 1, 2025",   sub: "02:00 AM",  color: "text-emerald-600", bg: "bg-emerald-50", border: "border-emerald-100" },
-            { label: "Backup Frequency",  value: "Daily",         sub: "at 2:00 AM", color: "text-blue-600",    bg: "bg-blue-50",    border: "border-blue-100" },
-            { label: "Storage Location",  value: "AWS S3",        sub: "af-south-1", color: "text-violet-600",  bg: "bg-violet-50",  border: "border-violet-100" },
-            { label: "Retention Period",  value: "90 days",       sub: "auto-delete",color: "text-amber-600",   bg: "bg-amber-50",   border: "border-amber-100" },
-          ].map((c) => (
-            <div key={c.label} className={`p-4 ${c.bg} border ${c.border} rounded-2xl`}>
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">{c.label}</p>
-              <p className={`text-lg font-bold ${c.color}`}>{c.value}</p>
-              <p className="text-xs text-gray-400 mt-0.5">{c.sub}</p>
-            </div>
-          ))}
-        </div>
+        <p className="text-xs leading-relaxed text-slate-400">
+          Everything added or changed is saved in <span className="font-semibold text-slate-200">this browser</span>. It isn&apos;t shared with other
+          devices, so download a backup now and then.
+        </p>
+        {saveFailed ? (
+          <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs font-semibold text-amber-400">
+            This browser is not saving changes (private window or storage full). Download a backup before closing the page.
+          </p>
+        ) : null}
 
         <div>
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Recent Backups</p>
-          <div className="space-y-2">
-            {[
-              { date: "Jan 1, 2025 — 02:00 AM",  size: "48.2 MB", status: "Success" },
-              { date: "Dec 31, 2024 — 02:00 AM", size: "47.8 MB", status: "Success" },
-              { date: "Dec 30, 2024 — 02:00 AM", size: "47.6 MB", status: "Success" },
-              { date: "Dec 29, 2024 — 02:00 AM", size: "—",        status: "Failed"  },
-              { date: "Dec 28, 2024 — 02:00 AM", size: "47.1 MB", status: "Success" },
-            ].map((b, i) => (
-              <div key={i} className="flex items-center justify-between px-4 py-3 bg-gray-50 rounded-xl border border-gray-100">
-                <div className="flex items-center gap-3">
-                  <Database size={14} className="text-gray-400" />
-                  <span className="text-sm text-gray-700">{b.date}</span>
-                </div>
-                <div className="flex items-center gap-4">
-                  <span className="text-xs text-gray-400">{b.size}</span>
-                  <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
-                    b.status === "Success"
-                      ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                      : "bg-red-50 text-red-600 border border-red-200"
-                  }`}>{b.status}</span>
-                  {b.status === "Success" && (
-                    <button 
-                      type="button"
-                      onClick={() => settingsService.resetSetting("backup-restore-key")}
-                      className="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1"
-                    >
-                      <Download size={12} /> Restore
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
+          <p className="mb-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">Backup</p>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className={btnPrimary} onClick={downloadBackup}>
+              <Download size={12} /> Download backup
+            </button>
+            <label className={`${btnGhost} cursor-pointer`}>
+              <Upload size={12} /> Restore from backup
+              <input type="file" accept="application/json,.json" className="sr-only" onChange={(e) => { restore(e.target.files?.[0]); e.target.value = ""; }} />
+            </label>
           </div>
         </div>
 
         <div>
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Data Export</p>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <p className="mb-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">Export to Excel (CSV)</p>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             {[
-              { label: "Export Members CSV",    desc: "All member records"        },
-              { label: "Export Transactions",   desc: "Full ledger as Excel"     },
-              { label: "Export Loan Register",  desc: "All loans as CSV"         },
+              { label: "Members", desc: `${data.members.length} members with shares and savings`, run: exportMembers },
+              { label: "Savings by month", desc: "Shares each member bought, month by month", run: exportSavings },
+              { label: "Loans", desc: `${data.loans.length} loans with repayments`, run: exportLoans },
+              { label: "Interest by month", desc: "Interest collected each month", run: exportInterest },
             ].map((ex) => (
-              <button key={ex.label} type="button" className="flex items-center gap-3 p-4 bg-gray-50 border border-gray-200 rounded-2xl hover:bg-gray-100 hover:border-gray-300 transition-colors text-left">
-                <Download size={16} className="text-gray-400 flex-shrink-0" />
+              <button
+                key={ex.label}
+                type="button"
+                onClick={ex.run}
+                className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950/60 p-4 text-left transition-colors hover:border-slate-700 hover:bg-slate-900"
+              >
+                <FileText size={16} className="shrink-0 text-slate-500" />
                 <div>
-                  <p className="text-sm font-semibold text-gray-700">{ex.label}</p>
-                  <p className="text-xs text-gray-400">{ex.desc}</p>
+                  <p className="text-sm font-semibold text-slate-200">{ex.label}</p>
+                  <p className="text-xs text-slate-500">{ex.desc}</p>
                 </div>
               </button>
             ))}
           </div>
         </div>
 
-        <div className="p-4 bg-red-50 border border-red-200 rounded-2xl flex items-start gap-3">
-          <AlertTriangle size={16} className="text-red-500 flex-shrink-0 mt-0.5" />
+        <div className="flex items-start gap-3 rounded-xl border border-rose-500/20 bg-rose-500/5 p-4">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-rose-400" />
           <div>
-            <p className="text-sm font-semibold text-red-700">Danger Zone</p>
-            <p className="text-xs text-red-500 mt-0.5 mb-3">These actions are irreversible. Please proceed with caution.</p>
-            <button type="button" className="flex items-center gap-1.5 text-xs font-medium text-red-600 bg-white border border-red-200 px-3 py-1.5 rounded-lg hover:bg-red-50 transition-colors">
-              <Trash2 size={12} /> Purge Archived Data
+            <p className="text-sm font-semibold text-rose-300">Start again</p>
+            <p className="mb-3 mt-0.5 text-xs text-slate-400">Throws away everything added or changed and goes back to the figures from the savings workbook.</p>
+            <button type="button" className={btnDanger} onClick={reset}>
+              <RotateCcw size={12} /> Reset to the workbook figures
             </button>
           </div>
         </div>
@@ -588,96 +375,60 @@ export default function SettingsPage() {
     ),
   };
 
-  const activeSection = navSections.find(s => s.id === active)!;
-
-  if (loading) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-gray-50">
-        <div className="flex flex-col items-center gap-2">
-          <Loader2 className="h-8 w-8 animate-spin text-amber-500" />
-          <p className="text-sm font-medium text-gray-500">Loading configurations...</p>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="min-h-screen bg-gray-50/50 p-4 md:p-8 max-w-7xl mx-auto">
-      {/* Top Bar notifications and alerts */}
-      {error && (
-        <div className="mb-6 p-4 bg-red-50 border border-red-200 text-red-700 text-sm rounded-2xl flex items-center gap-3">
-          <AlertTriangle size={18} className="flex-shrink-0" />
-          <span>{error}</span>
+    <div className="mx-auto min-h-screen max-w-7xl bg-slate-950 p-4 text-slate-100 antialiased selection:bg-amber-500 selection:text-slate-950 md:p-8">
+      {notice ? (
+        <div
+          className={`mb-6 flex items-center gap-3 rounded-xl border p-3 text-xs font-semibold ${notice.ok ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400" : "border-rose-500/30 bg-rose-500/10 text-rose-400"
+            }`}
+        >
+          {notice.ok ? <CheckCircle size={15} /> : <AlertTriangle size={15} />}
+          {notice.text}
         </div>
-      )}
+      ) : null}
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        {/* Navigation Sidebar */}
-        <div className="lg:col-span-4 space-y-2">
-          <div className="px-3 mb-4">
-            <h1 className="text-xl font-bold text-gray-800">System Settings</h1>
-            <p className="text-xs text-gray-400 mt-0.5">Manage dashboard rules, interest rates, and access access levels.</p>
+      <div className="grid grid-cols-1 items-start gap-8 lg:grid-cols-12">
+        {/* Navigation */}
+        <div className="space-y-2 lg:col-span-4">
+          <div className="mb-4 px-3">
+            <p className="mb-1 text-[10px] font-bold uppercase tracking-widest text-amber-500/80">Nurses Quartres Savings Group</p>
+            <h1 className="text-2xl font-black tracking-tight text-white">Settings</h1>
+            <p className="mt-1 text-xs text-slate-400">The rules your savings, loans and reports are worked out from.</p>
           </div>
-          {navSections.map((sec) => {
+          {nav.map((sec) => {
             const Icon = sec.icon;
-            const isSelected = active === sec.id;
+            const on = active === sec.id;
             return (
               <button
                 key={sec.id}
                 type="button"
                 onClick={() => setActive(sec.id)}
-                className={`w-full flex items-center justify-between p-3.5 rounded-2xl text-left transition border ${
-                  isSelected 
-                    ? "bg-white border-gray-200 shadow-sm ring-1 ring-black/5" 
-                    : "border-transparent hover:bg-gray-100 text-gray-500"
-                }`}
+                className={`flex w-full items-center justify-between rounded-2xl border p-3.5 text-left transition ${on ? "border-slate-700 bg-slate-900" : "border-transparent text-slate-400 hover:bg-slate-900/60"
+                  }`}
               >
                 <div className="flex items-center gap-3.5">
-                  <div className={`p-2 rounded-xl transition ${isSelected ? "bg-amber-500 text-white" : "bg-gray-100 text-gray-400"}`}>
+                  <div className={`rounded-xl p-2 ${on ? "bg-amber-500 text-slate-950" : "bg-slate-900 text-slate-500"}`}>
                     <Icon size={18} />
                   </div>
                   <div>
-                    <p className={`text-sm font-semibold ${isSelected ? "text-gray-800" : "text-gray-600"}`}>{sec.label}</p>
-                    <p className="text-xs text-gray-400 mt-0.5 font-normal leading-none">{sec.desc}</p>
+                    <p className={`text-sm font-semibold ${on ? "text-white" : "text-slate-300"}`}>{sec.label}</p>
+                    <p className="mt-0.5 text-xs leading-none text-slate-500">{sec.desc}</p>
                   </div>
                 </div>
-                <ChevronRight size={16} className={`text-gray-300 transition-transform ${isSelected ? "translate-x-0.5 text-gray-400" : ""}`} />
+                <ChevronRight size={16} className={on ? "text-slate-400" : "text-slate-700"} />
               </button>
             );
           })}
         </div>
 
-        {/* Content Area */}
+        {/* Content */}
         <div className="lg:col-span-8">
-          <Card className="border border-gray-200/80 shadow-sm rounded-3xl overflow-hidden bg-white">
-            <CardHeader className="border-b border-gray-100 px-6 py-5 flex flex-row items-center justify-between space-y-0">
-              <div>
-                <CardTitle className="text-base font-bold text-gray-800">{activeSection.label}</CardTitle>
-                <p className="text-xs text-gray-400 mt-0.5 font-normal">{activeSection.desc}</p>
-              </div>
-              
-              {/* Show safe buttons only for dynamic mutation sheets */}
-              {["organisation", "rates", "notifications", "security"].includes(active) && (
-                <button
-                  type="button"
-                  onClick={handleSave}
-                  disabled={saving}
-                  className="flex items-center gap-1.5 px-4 py-2 bg-gray-900 text-white font-medium text-xs rounded-xl hover:bg-gray-800 transition disabled:opacity-50"
-                >
-                  {saving ? (
-                    <Loader2 size={13} className="animate-spin" />
-                  ) : saved ? (
-                    <Check size={13} className="text-emerald-400" />
-                  ) : (
-                    <Save size={13} />
-                  )}
-                  {saving ? "Saving..." : saved ? "Saved!" : "Save Changes"}
-                </button>
-              )}
+          <Card className="overflow-hidden rounded-2xl border-slate-900 bg-slate-900/40">
+            <CardHeader className="border-b border-slate-900/60 px-6 py-5">
+              <CardTitle className="text-sm font-bold uppercase tracking-wider text-slate-200">{current.label}</CardTitle>
+              <p className="mt-0.5 text-xs text-slate-400">{current.desc}</p>
             </CardHeader>
-            <CardContent className="p-6">
-              {sectionContent[active]}
-            </CardContent>
+            <CardContent className="p-6">{content[active]}</CardContent>
           </Card>
         </div>
       </div>

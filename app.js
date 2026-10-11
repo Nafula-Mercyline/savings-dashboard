@@ -14,10 +14,11 @@ const path = require("path");
 const env = require("./api/config/env");
 
 const app = express();
+app.set('etag', false);
 
 // ─── Core Middleware ───────────────────────────────────────────────────────────
 app.use(helmet());
-app.use(cors({ origin: env.cors.origins, credentials: true }));
+app.use(cors({ origin: '*' }));
 app.use(morgan("dev"));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -49,7 +50,7 @@ function loadRoute(routeName, mountPath) {
 }
 
 // ─── Register all routes ──────────────────────────────────────────────────────
-loadRoute("dashboard", "/api/dashboard");
+loadRoute("Dashboard", "/api/Dashboard");
 loadRoute("savings", "/api/savings");
 loadRoute("loans", "/api/loans");
 loadRoute("interest", "/api/interest");

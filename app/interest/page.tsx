@@ -1,426 +1,487 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, LineChart, Line } from "recharts";
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
+import { Percent, TrendingUp, CalendarDays, CreditCard, Pencil, Plus, X, Download, Trash2, CheckCircle, AlertTriangle } from "lucide-react";
 import {
-  TrendingUp,
-  TrendingDown,
-  Percent,
-  Calculator,
-  Download,
-  ChevronUp,
-  ChevronDown,
-  AlertCircle,
-  CheckCircle,
-} from "lucide-react";
-import { collectPendingInterest, exportInterestReport, getInterestDashboard } from "@/lib/api/interestService";
+  computeDashboard,
+  cycleYears,
+  loadData,
+  money,
+  monthLabel,
+  saveData,
+  setMonthEntries,
+  type Dashboard,
+  type SaccoData,
+} from "@/lib/saccoData";
 
-type InterestMetric = { value: number; change: number; up: boolean };
-type MonthlyInterest = { month: string; earned: number; paid: number; net: number };
-type InterestProduct = {
-  name: string;
-  rate: number;
-  balance: number;
-  monthly: number;
-  type: "income" | "expense";
-  color: string;
-};
-type PendingInterest = {
-  id?: string;
-  member: string;
-  product: string;
-  amount: number;
-  dueDate: string;
-  status: "Due Soon" | "Overdue" | string;
-};
+/* ------------------------------------------------------------------ */
+/*  Look & feel (same as the dashboard page)                           */
+/* ------------------------------------------------------------------ */
 
-type InterestDashboardData = {
-  stats: {
-    totalEarned: InterestMetric;
-    totalPaid: InterestMetric;
-    netIncome: InterestMetric;
-    nim: InterestMetric;
-  };
-  monthly: MonthlyInterest[];
-  products: InterestProduct[];
-  pending: PendingInterest[];
-};
+const C_INTEREST = "#199e70";
+const C_LOANS = "#d95926";
+const SURFACE = "#070d1f";
+const GRID = "#131c33";
+const TEXT_SECONDARY = "#94a3b8";
 
-const emptyInterestDashboard: InterestDashboardData = {
-  stats: {
-    totalEarned: { value: 0, change: 0, up: true },
-    totalPaid: { value: 0, change: 0, up: false },
-    netIncome: { value: 0, change: 0, up: true },
-    nim: { value: 0, change: 0, up: true },
-  },
-  monthly: [],
-  products: [],
-  pending: [],
-};
+const btnBase =
+  "inline-flex items-center justify-center gap-1.5 rounded-lg text-xs font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50";
+const btnPrimary = `${btnBase} bg-amber-500 px-3.5 py-2 text-slate-950 hover:bg-amber-400`;
+const btnGhost = `${btnBase} border border-slate-700 bg-slate-900 px-3.5 py-2 text-slate-300 hover:bg-slate-800`;
+const btnAdd = `${btnBase} border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-400 hover:bg-amber-500/20`;
+const iconBtn = "rounded-md p-1.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-200";
+const inputCls =
+  "w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-600 focus:border-amber-500/60 focus:outline-none";
+const thCls = "px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500";
 
-const INITIALS_COLORS = ["#c9a84c", "#10b981", "#3b82f6", "#ef4444", "#8b5cf6", "#f97316"];
+const axisFmt = (n: number) =>
+  n >= 1_000_000 ? `${+(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${Math.round(n / 1_000)}K` : String(n);
+const fmtShares = (n: number) => (Number.isInteger(n) ? money(n) : n.toFixed(1));
+const ratePct = (r: number) => `${+(r * 100).toFixed(2)}%`;
+const num = (s: string) => (s.trim() === "" ? 0 : Number(s.replace(/,/g, "")));
 
-const fmt = (amount = 0) =>
-  amount >= 1_000_000 ? `UGX ${(amount / 1_000_000).toFixed(2)}M` : `UGX ${amount.toLocaleString()}`;
+type ModalState = { kind: "interest"; month: string | null } | null;
 
-const fmtShort = (amount = 0) => (amount >= 1_000_000 ? `${(amount / 1_000_000).toFixed(1)}M` : amount.toLocaleString());
-
-function getInitials(name = "") {
-  return name
-    .split(" ")
-    .map((part) => part[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-}
-
-const CustomTooltip = ({ active, payload, label }: any) => {
-  if (!active || !payload?.length) return null;
+/* ------------------------------------------------------------------ */
+/*  Small building blocks                                              */
+/* ------------------------------------------------------------------ */
+function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950 p-3 text-sm shadow-xl backdrop-blur-md">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4" onClick={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className={`max-h-[90vh] w-full overflow-y-auto rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl ${wide ? "max-w-2xl" : "max-w-md"}`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-5 flex items-center justify-between">
+          <h2 className="text-sm font-bold uppercase tracking-wider text-slate-200">{title}</h2>
+          <button type="button" onClick={onClose} className={iconBtn} aria-label="Close">
+            <X size={16} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-500">{label}</span>
+      {children}
+      {hint ? <span className="mt-1 block text-[10px] text-slate-500">{hint}</span> : null}
+    </label>
+  );
+}
+
+function FormActions({ onClose, error, label = "Save", left }: { onClose: () => void; error?: string; label?: string; left?: ReactNode }) {
+  return (
+    <div className="mt-5">
+      {error ? <p className="mb-3 text-xs font-semibold text-rose-400">{error}</p> : null}
+      <div className="flex items-center justify-between gap-2">
+        <div>{left}</div>
+        <div className="flex gap-2">
+          <button type="button" onClick={onClose} className={btnGhost}>
+            Cancel
+          </button>
+          <button type="submit" className={btnPrimary}>
+            {label}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Record or correct the interest the group collected in one month.
+function InterestForm({
+  data,
+  dash,
+  month: startMonth,
+  onSave,
+  onClose,
+}: {
+  data: SaccoData;
+  dash: Dashboard;
+  month: string | null;
+  onSave: (month: string, amount: number) => void;
+  onClose: () => void;
+}) {
+  const first = startMonth ?? dash.defaultMonth;
+  const [month, setMonth] = useState(first);
+  const [amount, setAmount] = useState(data.interest[first] ? String(data.interest[first]) : "");
+  const [err, setErr] = useState("");
+  const months = Array.from(new Set([...dash.monthOptions, first])).sort();
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    const a = num(amount);
+    if (!Number.isFinite(a) || a < 0) return setErr("Interest must be 0 or more.");
+    onSave(month, Math.round(a));
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-3">
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Month">
+          <select
+            className={inputCls}
+            value={month}
+            onChange={(e) => {
+              setMonth(e.target.value);
+              setAmount(data.interest[e.target.value] ? String(data.interest[e.target.value]) : "");
+            }}
+          >
+            {months.map((m) => (
+              <option key={m} value={m}>
+                {monthLabel(m)}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Interest collected (UGX)" hint="From loans, this month">
+          <input className={inputCls} inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" autoFocus />
+        </Field>
+      </div>
+      {data.interest[month] ? (
+        <p className="text-[10px] text-slate-500">This month already has UGX {money(data.interest[month])}. Saving replaces it.</p>
+      ) : null}
+      <p className="text-[10px] text-slate-500">The interest is shared between members by the shares they hold.</p>
+      <FormActions onClose={onClose} error={err} label="Save interest" />
+    </form>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Page                                                               */
+/* ------------------------------------------------------------------ */
+
+function Kpi({ label, value, unit, sub, icon: Icon, tint }: { label: string; value: string; unit?: string; sub: string; icon: typeof Percent; tint: string }) {
+  return (
+    <Card className="border-slate-900 bg-slate-900/40">
+      <CardContent className="p-5">
+        <div className="mb-3 flex items-center gap-3">
+          <div className={`rounded-xl p-2.5 ${tint}`}>
+            <Icon size={18} />
+          </div>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{label}</p>
+        </div>
+        <p className="font-mono text-2xl font-bold tracking-tight text-white">
+          {unit ? <span className="mr-1.5 text-xs font-semibold text-slate-500">{unit}</span> : null}
+          {value}
+        </p>
+        <p className="mt-3 border-t border-slate-900 pt-3 text-xs font-medium text-slate-500">{sub}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
+type TooltipItem = { name: string; color: string; value: number };
+function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: TooltipItem[]; label?: string }) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/95 p-3 text-xs shadow-2xl">
       <p className="mb-2 font-semibold text-slate-200">{label}</p>
-      {payload.map((item: any) => (
-        <div key={item.name} className="flex items-center gap-2 text-slate-400">
-          <span className="h-2 w-2 rounded-full" style={{ background: item.color }} />
-          <span className="capitalize">{item.name}:</span>
-          <span className="font-semibold text-slate-200">UGX {fmtShort(item.value)}</span>
+      {payload.map((p) => (
+        <div key={p.name} className="mt-1 flex items-center gap-2 text-slate-400">
+          <span className="h-2 w-2 rounded-full" style={{ background: p.color }} />
+          <span>{p.name}</span>
+          <span className="ml-auto pl-4 font-mono font-semibold text-slate-200">UGX {money(p.value)}</span>
         </div>
       ))}
     </div>
   );
-};
+}
 
-export default function InterestSummaryPage() {
-  const queryClient = useQueryClient();
-  const [collectingId, setCollectingId] = useState<string | null>(null);
-  const year = "2024";
+export default function InterestPage() {
+  const [data, setData] = useState<SaccoData | null>(null);
+  const [period, setPeriod] = useState("all");
+  const [modal, setModal] = useState<ModalState>(null);
+  const [notice, setNotice] = useState("");
+  const [saveFailed, setSaveFailed] = useState(false);
 
-  const { data, error, isFetching, isLoading } = useQuery<InterestDashboardData>({
-    queryKey: ["interest-dashboard", year],
-    queryFn: () => getInterestDashboard({ year }),
-    staleTime: 60_000,
-  });
+  useEffect(() => {
+    setData(loadData());
+  }, []);
 
-  const dashboard = data ?? emptyInterestDashboard;
-  const { stats, monthly, products, pending } = dashboard;
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(""), 4000);
+    return () => clearTimeout(t);
+  }, [notice]);
 
-  const incomeProducts = useMemo(() => products.filter((product) => product.type === "income"), [products]);
-  const expenseProducts = useMemo(() => products.filter((product) => product.type === "expense"), [products]);
-  const totalIncome = incomeProducts.reduce((sum, product) => sum + product.monthly, 0);
-  const totalExpense = expenseProducts.reduce((sum, product) => sum + product.monthly, 0);
-  const currentMonth = monthly[monthly.length - 1] ?? { month: "N/A", earned: 0, paid: 0, net: 0 };
-  const overdueCount = pending.filter((item) => item.status === "Overdue").length;
-  const dueSoonCount = pending.filter((item) => item.status === "Due Soon").length;
+  const dash = useMemo(() => (data ? computeDashboard(data, period) : null), [data, period]);
 
-  const handleExport = () => {
-    exportInterestReport({ format: "csv", year });
-  };
-
-  const handleCollect = async (item: PendingInterest) => {
-    if (!item.id) return;
-
-    try {
-      setCollectingId(item.id);
-      await collectPendingInterest(item.id);
-      await queryClient.invalidateQueries({ queryKey: ["interest-dashboard", year] });
-    } finally {
-      setCollectingId(null);
-    }
-  };
-
-  if (isLoading) {
+  if (!data || !dash) {
     return (
-      <div className="flex h-screen items-center justify-center bg-slate-950">
-        <div className="flex flex-col items-center gap-3">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-emerald-500 border-t-transparent" />
-          <p className="text-sm font-medium text-slate-400">Loading SACCO interest registers…</p>
-        </div>
+      <div className="flex min-h-[400px] items-center justify-center bg-slate-950">
+        <div className="h-10 w-10 animate-spin rounded-full border-2 border-amber-500 border-t-transparent" />
       </div>
     );
   }
 
+  const commit = (next: SaccoData, message: string) => {
+    setData(next);
+    setSaveFailed(!saveData(next));
+    setModal(null);
+    setNotice(message);
+  };
+
+  // Change only the interest of one month; shares stay exactly as they are.
+  const saveInterest = (month: string, amount: number, message: string) => {
+    const shares: Record<string, number> = Object.fromEntries(data.members.map((m) => [m.id, data.savings[m.id]?.[month] ?? 0]));
+    commit(setMonthEntries(data, month, shares, amount), message);
+  };
+
+  const years = ["all", ...cycleYears(data)];
+  const today = new Date().toLocaleDateString("en-UG", { day: "numeric", month: "long", year: "numeric" });
+  const T = dash.memberTotals;
+  const withInterest = dash.chart.filter((p) => p.interest > 0);
+  const best = withInterest.reduce<(typeof withInterest)[number] | null>((b, p) => (!b || p.interest > b.interest ? p : b), null);
+  const average = withInterest.length ? Math.round(dash.kpi.interest / withInterest.length) : 0;
+  const loanInterest = dash.loans.reduce((a, l) => a + l.interest, 0);
+
+  const byRate = new Map<number, number>();
+  for (const l of dash.loans) byRate.set(l.rate, (byRate.get(l.rate) ?? 0) + l.interest);
+  const rateRows = Array.from(byRate.entries()).sort((a, b) => a[0] - b[0]);
+
+  const memberRows = [...dash.members].sort((a, b) => b.interest - a.interest);
+
+  const exportCsv = () => {
+    const head = "Member,Shares,Interest share (UGX)\n";
+    const body = memberRows.map((m) => `"${m.name.replace(/"/g, '""')}",${m.shares},${m.interest}`).join("\n");
+    const months = "\n\nMonth,Interest collected (UGX)\n" + dash.chart.map((p) => `${p.label},${p.interest}`).join("\n");
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([head + body + months], { type: "text/csv;charset=utf-8;" }));
+    link.download = `interest_${period}_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
-    <div className="min-h-screen space-y-6 bg-slate-950 p-6 text-slate-100">
-      {/* Header section */}
-      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+    <div className="min-h-screen space-y-6 bg-slate-950 p-6 text-slate-100 antialiased selection:bg-amber-500 selection:text-slate-950">
+      {/* Header */}
+      <div className="flex flex-col justify-between gap-4 border-b border-slate-900 pb-6 md:flex-row md:items-center">
         <div>
-          <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-emerald-500">
-            <Percent size={13} />
-            <span>SACCO Treasury & Portfolio</span>
-          </div>
-          <h1 className="text-2xl font-bold tracking-tight text-white">Interest Summary Ledger</h1>
-          <p className="mt-1 text-sm text-slate-400">
-            Fiscal Year {year} · Updated {new Date().toLocaleDateString("en-UG", { day: "numeric", month: "long", year: "numeric" })}
-            {isFetching ? " · Synchronizing changes…" : ""}
-          </p>
+          <p className="mb-1 text-[10px] font-bold uppercase tracking-widest text-amber-500/80">Nurses Quatres Savings Group</p>
+          <h1 className="text-2xl font-black tracking-tight text-white">Interest</h1>
+          <p className="mt-1 text-xs font-medium text-slate-400">Interest collected from loans and shared by members' shares · {today}</p>
         </div>
-        <button 
-          onClick={handleExport} 
-          className="flex items-center justify-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-4 py-2.5 text-sm font-medium text-slate-300 shadow-sm transition-colors hover:bg-slate-800 hover:text-white"
-        >
-          <Download size={15} /> Export Audit Report
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button className={btnGhost} onClick={exportCsv}>
+            <Download size={14} /> Export CSV
+          </button>
+          <button className={btnPrimary} onClick={() => setModal({ kind: "interest", month: null })}>
+            <Plus size={14} /> Record interest
+          </button>
+        </div>
       </div>
 
-      {error ? (
-        <div className="rounded-xl border border-red-900/50 bg-red-950/40 p-4 text-sm text-red-400 backdrop-blur-sm">
-          Failed to load interest accounting registers: {(error as Error).message}
+      {notice ? (
+        <div className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-400">
+          <CheckCircle size={14} /> {notice}
+        </div>
+      ) : null}
+      {saveFailed ? (
+        <div className="flex items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-400">
+          <AlertTriangle size={14} /> This browser could not save your changes. They will be lost when you close the page.
         </div>
       ) : null}
 
-      {/* Top Cards Grid */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {[
-          { label: "Total Portfolio Interest Earned", value: fmt(stats.totalEarned.value), change: stats.totalEarned.change, up: stats.totalEarned.up, icon: TrendingUp, accent: "bg-emerald-500/10 text-emerald-400", border: "border-emerald-500/20" },
-          { label: "Total Savings Interest Paid", value: fmt(stats.totalPaid.value), change: stats.totalPaid.change, up: stats.totalPaid.up, icon: TrendingDown, accent: "bg-rose-500/10 text-rose-400", border: "border-rose-500/20" },
-          { label: "Net Interest Income (NII)", value: fmt(stats.netIncome.value), change: stats.netIncome.change, up: stats.netIncome.up, icon: Calculator, accent: "bg-amber-500/10 text-amber-400", border: "border-amber-500/20" },
-          { label: "Net Interest Margin (NIM)", value: `${stats.nim.value}%`, change: stats.nim.change, up: stats.nim.up, icon: Percent, accent: "bg-blue-500/10 text-blue-400", border: "border-blue-500/20" },
-        ].map((item) => (
-          <Card key={item.label} className={`border ${item.border} bg-slate-900 shadow-sm transition-all hover:border-slate-700`}>
-            <CardContent className="p-5">
-              <div className="flex items-start justify-between">
-                <div className={`rounded-xl p-2.5 ${item.accent}`}>
-                  <item.icon size={18} />
-                </div>
-                <span className={`flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs font-semibold ${item.up ? "bg-emerald-500/10 text-emerald-400" : "bg-rose-500/10 text-rose-400"}`}>
-                  {item.up ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                  {Math.abs(item.change)}%
-                </span>
-              </div>
-              <div className="mt-4">
-                <p className="text-xs font-medium uppercase tracking-wider text-slate-400">{item.label}</p>
-                <p className="mt-1 font-mono text-xl font-bold text-white tracking-tight">{item.value}</p>
-                <p className="mt-1 text-xs text-slate-500">vs. previous month cycle</p>
-              </div>
-            </CardContent>
-          </Card>
+      {/* Period */}
+      <div className="inline-flex gap-1 rounded-xl border border-slate-900 bg-slate-950 p-1">
+        {years.map((y) => (
+          <button
+            key={y}
+            onClick={() => setPeriod(y)}
+            className={`rounded-lg px-3 py-1.5 text-[11px] font-bold transition-colors ${period === y ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"
+              }`}
+          >
+            {y === "all" ? "All time" : y}
+          </button>
         ))}
       </div>
 
-      {/* Analytics Trends section */}
+      {/* KPIs */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <Kpi label="Interest collected" unit="UGX" value={money(dash.kpi.interest)} sub={`Over ${withInterest.length} months`} icon={TrendingUp} tint="bg-emerald-500/10 text-emerald-400" />
+        <Kpi label="Average a month" unit="UGX" value={money(average)} sub="In months with interest" icon={Percent} tint="bg-amber-500/10 text-amber-400" />
+        <Kpi label="Best month" unit="UGX" value={best ? money(best.interest) : "0"} sub={best ? best.label : "No interest recorded"} icon={CalendarDays} tint="bg-blue-500/10 text-blue-400" />
+        <Kpi label="Interest on loans" unit="UGX" value={money(loanInterest)} sub="Total charged on loans in this period" icon={CreditCard} tint="bg-orange-500/10 text-orange-400" />
+      </div>
+
+      {/* Chart + by rate */}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <Card className="border border-slate-800 bg-slate-900 shadow-sm xl:col-span-2">
-          <CardHeader className="pb-2">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <CardTitle className="text-base font-semibold text-slate-200">SACCO Performance Trajectory — {year}</CardTitle>
-                <p className="mt-0.5 text-xs text-slate-400">Monthly breakdown of gross vs net cash flows</p>
-              </div>
-              <div className="flex gap-4 text-xs font-medium text-slate-400">
-                <span className="flex items-center gap-1.5"><span className="inline-block h-1.5 w-3 rounded-full bg-emerald-500" />Earned</span>
-                <span className="flex items-center gap-1.5"><span className="inline-block h-1.5 w-3 rounded-full bg-rose-500" />Paid</span>
-                <span className="flex items-center gap-1.5"><span className="inline-block h-1.5 w-3 rounded-full bg-amber-500" />Net</span>
-              </div>
-            </div>
+        <Card className="border-slate-900 bg-slate-900/40 xl:col-span-2">
+          <CardHeader className="border-b border-slate-900/60 pb-4">
+            <CardTitle className="text-sm font-bold uppercase tracking-wider text-slate-200">Interest collected each month</CardTitle>
           </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={260}>
-              <AreaChart data={monthly} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
-                <defs>
-                  {[
-                    { id: "earnedGrad", color: "#10b981" },
-                    { id: "paidGrad", color: "#f43f5e" },
-                    { id: "netGrad", color: "#f59e0b" },
-                  ].map((gradient) => (
-                    <linearGradient key={gradient.id} id={gradient.id} x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor={gradient.color} stopOpacity={0.12} />
-                      <stop offset="95%" stopColor={gradient.color} stopOpacity={0} />
-                    </linearGradient>
-                  ))}
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                <XAxis dataKey="month" tick={{ fontSize: 12, fill: "#64748b" }} axisLine={false} tickLine={false} />
-                <YAxis tickFormatter={fmtShort} tick={{ fontSize: 11, fill: "#64748b" }} axisLine={false} tickLine={false} width={55} />
-                <Tooltip content={<CustomTooltip />} />
-                <Area type="monotone" dataKey="earned" stroke="#10b981" strokeWidth={2} fill="url(#earnedGrad)" dot={false} activeDot={{ r: 5 }} />
-                <Area type="monotone" dataKey="paid" stroke="#f43f5e" strokeWidth={2} fill="url(#paidGrad)" dot={false} activeDot={{ r: 5 }} />
-                <Area type="monotone" dataKey="net" stroke="#f59e0b" strokeWidth={2} fill="url(#netGrad)" dot={false} activeDot={{ r: 5 }} />
-              </AreaChart>
+          <CardContent className="pt-6">
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={dash.chart} margin={{ top: 4, right: 4, bottom: 0, left: -10 }} barCategoryGap="20%">
+                <CartesianGrid stroke={GRID} vertical={false} />
+                <XAxis dataKey="label" tick={{ fontSize: 10, fill: TEXT_SECONDARY }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                <YAxis tickFormatter={(v: number) => axisFmt(Number(v))} tick={{ fontSize: 10, fill: TEXT_SECONDARY }} axisLine={false} tickLine={false} width={50} />
+                <Tooltip content={<ChartTooltip />} cursor={{ fill: SURFACE }} />
+                <Bar dataKey="interest" name="Interest collected" fill={C_INTEREST} radius={[4, 4, 0, 0]} maxBarSize={22} />
+              </BarChart>
             </ResponsiveContainer>
           </CardContent>
         </Card>
 
-        {/* Breakdown Card */}
-        <Card className="border border-slate-800 bg-slate-900 shadow-sm">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base font-semibold text-slate-200">{currentMonth.month} {year} Closeout</CardTitle>
-            <p className="text-xs text-slate-400">Statement period balances</p>
+        <Card className="border-slate-900 bg-slate-900/40">
+          <CardHeader className="border-b border-slate-900/60 pb-4">
+            <CardTitle className="text-sm font-bold uppercase tracking-wider text-slate-200">Charged on loans, by rate</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3">
-            {[
-              { label: "Gross Interest Earned", value: currentMonth.earned, color: "text-emerald-400", bg: "bg-emerald-500/5 border border-emerald-500/10", icon: TrendingUp },
-              { label: "Interest Paid to Depositors", value: currentMonth.paid, color: "text-rose-400", bg: "bg-rose-500/5 border border-rose-500/10", icon: TrendingDown },
-              { label: "Retained Treasury Net", value: currentMonth.net, color: "text-amber-400", bg: "bg-amber-500/5 border border-amber-500/10", icon: Calculator },
-            ].map((item) => (
-              <div key={item.label} className={`flex items-center justify-between rounded-xl p-3 ${item.bg}`}>
-                <div className="flex items-center gap-2">
-                  <item.icon size={15} className={item.color} />
-                  <span className="text-xs font-medium text-slate-300">{item.label}</span>
-                </div>
-                <span className={`font-mono text-sm font-bold ${item.color}`}>{fmt(item.value)}</span>
-              </div>
-            ))}
-
-            <div className="border-t border-slate-800 pt-3">
-              <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">6-Month Margin Directional Delta</p>
-              <ResponsiveContainer width="100%" height={70}>
-                <LineChart data={monthly.slice(-6)} margin={{ top: 5, right: 5, bottom: 0, left: 5 }}>
-                  <Line type="monotone" dataKey="net" stroke="#c9a84c" strokeWidth={2} dot={false} />
-                  <XAxis dataKey="month" tick={{ fontSize: 10, fill: "#475569" }} axisLine={false} tickLine={false} />
-                  <Tooltip formatter={(value: any) => [`UGX ${fmtShort(value)}`, "Net Portfolio Yield"]} contentStyle={{ fontSize: 11, background: '#0f172a', border: '1px solid #334155', borderRadius: 8, color: '#f8fafc' }} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
+          <CardContent className="space-y-4 pt-6">
+            {rateRows.length === 0 ? (
+              <p className="text-xs text-slate-500">No loans in this period.</p>
+            ) : (
+              rateRows.map(([rate, amount]) => {
+                const pct = loanInterest > 0 ? Math.round((amount / loanInterest) * 100) : 0;
+                return (
+                  <div key={rate}>
+                    <div className="mb-1 flex items-center justify-between text-xs">
+                      <span className="font-bold text-slate-300">{ratePct(rate)} a month</span>
+                      <span className="font-mono text-slate-400">{pct}%</span>
+                    </div>
+                    <div className="h-1.5 overflow-hidden rounded-full bg-slate-950">
+                      <div className="h-full rounded-full" style={{ width: `${pct}%`, background: C_LOANS }} />
+                    </div>
+                    <p className="mt-1 font-mono text-[11px] text-slate-500">UGX {money(amount)}</p>
+                  </div>
+                );
+              })
+            )}
           </CardContent>
         </Card>
       </div>
 
-      {/* Allocations & Product performance split */}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        <Card className="border border-slate-800 bg-slate-900 shadow-sm">
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <div>
-                <CardTitle className="text-base font-semibold text-slate-200">Asset Yield (Loan Income)</CardTitle>
-                <p className="mt-0.5 text-xs text-slate-400">Yield across lending books · UGX {fmtShort(totalIncome)} / mo</p>
-              </div>
-              <span className="rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-400">Credit In</span>
-            </div>
+        {/* Month by month (editable) */}
+        <Card className="overflow-hidden border-slate-900 bg-slate-900/40">
+          <CardHeader className="border-b border-slate-900/60 pb-4">
+            <CardTitle className="text-sm font-bold uppercase tracking-wider text-slate-200">Month by month</CardTitle>
+            <p className="mt-0.5 text-xs text-slate-400">Add, correct or clear the interest for any month</p>
           </CardHeader>
-          <CardContent className="space-y-4">
-            {incomeProducts.map((product) => {
-              const pct = totalIncome > 0 ? Math.round((product.monthly / totalIncome) * 100) : 0;
-              return (
-                <div key={product.name}>
-                  <div className="mb-1.5 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="h-2 w-2 rounded-full" style={{ background: product.color }} />
-                      <span className="text-sm font-medium text-slate-300">{product.name}</span>
-                      <span className="font-mono text-xs text-slate-500">({product.rate}%)</span>
-                    </div>
-                    <span className="font-mono text-xs font-semibold text-slate-200">{fmt(product.monthly)}/mo</span>
-                  </div>
-                  <div className="h-1.5 overflow-hidden rounded-full bg-slate-800">
-                    <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: product.color }} />
-                  </div>
-                  <p className="mt-1 font-mono text-[11px] text-slate-500">Outstanding Book Value: {fmt(product.balance)}</p>
-                </div>
-              );
-            })}
-          </CardContent>
-        </Card>
-
-        <Card className="border border-slate-800 bg-slate-900 shadow-sm">
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <div>
-                <CardTitle className="text-base font-semibold text-slate-200">Liability Expenses (Dividends & Dividends Due)</CardTitle>
-                <p className="mt-0.5 text-xs text-slate-400">Cost of retail capitalization · UGX {fmtShort(totalExpense)} / mo</p>
-              </div>
-              <span className="rounded-full bg-rose-500/10 px-2.5 py-1 text-xs font-semibold text-rose-400">Capital Out</span>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {expenseProducts.map((product) => {
-              const pct = totalExpense > 0 ? Math.round((product.monthly / totalExpense) * 100) : 0;
-              return (
-                <div key={product.name}>
-                  <div className="mb-1.5 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="h-2 w-2 rounded-full" style={{ background: product.color }} />
-                      <span className="text-sm font-medium text-slate-300">{product.name}</span>
-                      <span className="font-mono text-xs text-slate-500">({product.rate}%)</span>
-                    </div>
-                    <span className="font-mono text-xs font-semibold text-slate-200">{fmt(product.monthly)}/mo</span>
-                  </div>
-                  <div className="h-1.5 overflow-hidden rounded-full bg-slate-800">
-                    <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: product.color }} />
-                  </div>
-                  <p className="mt-1 font-mono text-[11px] text-slate-500">Aggregate Liquidity Base: {fmt(product.balance)}</p>
-                </div>
-              );
-            })}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Collections Ledger / Table */}
-      <Card className="border border-slate-800 bg-slate-900 shadow-sm">
-        <CardHeader className="pb-4">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <CardTitle className="text-base font-semibold text-slate-200">Pending Institutional Interest Inflows</CardTitle>
-              <p className="mt-0.5 text-xs text-slate-400">{pending.length} verified clearing entries pending ledger settlement</p>
-            </div>
-            <div className="flex items-center gap-2 self-start sm:self-auto">
-              <span className="flex items-center gap-1.5 rounded-lg bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-400">
-                <AlertCircle size={13} /> {overdueCount} Overdue Aging
-              </span>
-              <span className="flex items-center gap-1.5 rounded-lg bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-400">
-                <AlertCircle size={13} /> {dueSoonCount} Nearing Maturity
-              </span>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="px-0 pt-0 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-y border-slate-800 bg-slate-950/40 text-slate-400">
-                {["Shareholder / Member", "Loan Asset Class", "Unrealized Interest", "Maturity Target", "Aging Status", "Actions"].map((heading) => (
-                  <th key={heading} className="px-6 py-3.5 text-left text-xs font-semibold uppercase tracking-wider">{heading}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60">
-              {pending.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="py-12 text-center text-sm text-slate-500">No open pending collections found in this ledger period.</td>
-                </tr>
-              ) : (
-                pending.map((item, index) => {
-                  const color = INITIALS_COLORS[index % INITIALS_COLORS.length];
-                  const isOverdue = item.status === "Overdue";
-                  return (
-                    <tr key={item.id ?? `${item.member}-${item.product}-${index}`} className="group transition-colors hover:bg-slate-850/40">
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-3">
-                          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold" style={{ background: `${color}15`, color, border: `1px solid ${color}30` }}>
-                            {getInitials(item.member)}
-                          </div>
-                          <span className="font-medium text-slate-200">{item.member}</span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 text-slate-300">{item.product}</td>
-                      <td className="px-6 py-4"><span className="font-mono font-semibold text-white">{fmt(item.amount)}</span></td>
-                      <td className="px-6 py-4"><span className={`text-sm font-mono ${isOverdue ? "font-semibold text-rose-400" : "text-slate-400"}`}>{item.dueDate}</span></td>
-                      <td className="px-6 py-4">
-                        <span className={`inline-flex items-center whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-medium border ${isOverdue ? "border-rose-900/30 bg-rose-500/5 text-rose-400" : "border-amber-900/30 bg-amber-500/5 text-amber-400"}`}>
-                          <span className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${isOverdue ? "bg-rose-500" : "bg-amber-500"}`} />
-                          {item.status}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="flex gap-1 md:opacity-0 transition-opacity group-hover:opacity-100">
-                          <button
-                            disabled={!item.id || collectingId === item.id}
-                            onClick={() => handleCollect(item)}
-                            className="flex items-center gap-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-3 py-1.5 text-xs font-medium text-emerald-400 transition-all hover:bg-emerald-500 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-30"
-                          >
-                            <CheckCircle size={12} /> {collectingId === item.id ? "Posting Entry…" : "Reconcile"}
-                          </button>
+          <CardContent className="p-0">
+            <div className="max-h-[420px] overflow-auto">
+              <table className="w-full border-collapse text-left text-xs">
+                <thead className="sticky top-0 bg-slate-900">
+                  <tr className="border-b border-slate-800">
+                    <th className={thCls}>Month</th>
+                    <th className={`${thCls} text-right`}>Interest (UGX)</th>
+                    <th className={thCls}></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-900">
+                  {dash.chart.map((p) => (
+                    <tr key={p.month} className="hover:bg-slate-900/60">
+                      <td className="px-4 py-2.5 text-slate-300">{p.label}</td>
+                      <td className="px-4 py-2.5 text-right font-mono font-bold text-slate-100">{p.interest ? money(p.interest) : <span className="font-normal text-slate-600">–</span>}</td>
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center justify-end gap-1">
+                          {p.interest ? null : (
+                            <button className={btnAdd} onClick={() => setModal({ kind: "interest", month: p.month })}>
+                              <Plus size={11} /> Add
+                            </button>
+                          )}
+                          {p.interest ? (
+                            <>
+                              <button className={iconBtn} aria-label={`Edit interest for ${p.label}`} onClick={() => setModal({ kind: "interest", month: p.month })}>
+                                <Pencil size={13} />
+                              </button>
+                              <button
+                                className={`${iconBtn} hover:text-rose-400`}
+                                aria-label={`Clear interest for ${p.label}`}
+                                onClick={() => {
+                                  if (window.confirm(`Clear the interest recorded for ${p.label}?`)) saveInterest(p.month, 0, "Interest cleared.");
+                                }}
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </>
+                          ) : null}
                         </div>
                       </td>
                     </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </CardContent>
-      </Card>
+                  ))}
+                </tbody>
+                <tfoot className="sticky bottom-0 bg-slate-900">
+                  <tr className="border-t border-slate-800 font-bold">
+                    <td className="px-4 py-2.5 text-slate-300">Total</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-emerald-400">{money(dash.kpi.interest)}</td>
+                    <td />
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Each member's share */}
+        <Card className="overflow-hidden border-slate-900 bg-slate-900/40">
+          <CardHeader className="border-b border-slate-900/60 pb-4">
+            <CardTitle className="text-sm font-bold uppercase tracking-wider text-slate-200">Each member's share</CardTitle>
+            <p className="mt-0.5 text-xs text-slate-400">Worked out from the shares each member holds</p>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="max-h-[420px] overflow-auto">
+              <table className="w-full border-collapse text-left text-xs">
+                <thead className="sticky top-0 bg-slate-900">
+                  <tr className="border-b border-slate-800">
+                    <th className={thCls}>Member</th>
+                    <th className={`${thCls} text-right`}>Shares</th>
+                    <th className={`${thCls} text-right`}>Interest (UGX)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-900">
+                  {memberRows.map((m) => (
+                    <tr key={m.id} className="hover:bg-slate-900/60">
+                      <td className="px-4 py-2.5 font-bold text-slate-200">{m.name}</td>
+                      <td className="px-4 py-2.5 text-right font-mono text-slate-400">{fmtShares(m.shares)}</td>
+                      <td className="px-4 py-2.5 text-right font-mono font-bold text-emerald-400">{money(m.interest)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot className="sticky bottom-0 bg-slate-900">
+                  <tr className="border-t border-slate-800 font-bold">
+                    <td className="px-4 py-2.5 text-slate-300">Total</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-slate-300">{fmtShares(T.shares)}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-emerald-400">{money(T.interest)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {modal?.kind === "interest" ? (
+        <Modal title="Record interest" onClose={() => setModal(null)}>
+          <InterestForm
+            data={data}
+            dash={dash}
+            month={modal.month}
+            onClose={() => setModal(null)}
+            onSave={(month, amount) => saveInterest(month, amount, `${monthLabel(month)} saved.`)}
+          />
+        </Modal>
+      ) : null}
     </div>
   );
 }

@@ -26,7 +26,7 @@ export default function Sidebar() {
 
     const menu: MenuItem[] = [
         // Changed path from "/" to "/dashboard" to match app/dashboard/page.tsx
-        { name: "Dashboard", icon: Home, path: "/Dashboard" },
+        { name: "Dashboard", icon: Home, path: "/dashboard" },
         { name: "My Savings", icon: PiggyBank, path: "/savings" },
         { name: "Loans", icon: Wallet, path: "/loans" },
         { name: "Interest Summary", icon: Percent, path: "/interest" },
@@ -45,7 +45,7 @@ export default function Sidebar() {
                         <Building2 size={18} />
                     </div>
                     <div>
-                        <h2 className="text-sm font-bold text-slate-100 tracking-tight leading-none">Kampala SACCO</h2>
+                        <h2 className="text-sm font-bold text-slate-100 tracking-tight leading-none">Nurses Quatres SACCO</h2>
                         <span className="text-[10px] text-slate-500 font-medium tracking-wider uppercase mt-1 inline-block">Management Portal</span>
                     </div>
                 </div>
@@ -62,8 +62,8 @@ export default function Sidebar() {
                                     <Link
                                         href={item.path}
                                         className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 group relative text-sm ${isActive
-                                                ? "bg-slate-900 text-amber-400 font-semibold shadow-sm border border-slate-800"
-                                                : "text-slate-400 hover:bg-slate-900/60 hover:text-slate-200"
+                                            ? "bg-slate-900 text-amber-400 font-semibold shadow-sm border border-slate-800"
+                                            : "text-slate-400 hover:bg-slate-900/60 hover:text-slate-200"
                                             }`}
                                     >
                                         {/* Left Accent indicator line on active link */}

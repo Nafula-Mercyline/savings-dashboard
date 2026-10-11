@@ -6,6 +6,20 @@
  *
  * Assumes Sequelize ORM. Swap query syntax for Mongoose/Knex as needed.
  * Models expected: Member, Saving, Loan, Transaction, Interest
+ *
+ * getSummary({ period }) returns the shape the dashboard page expects:
+ *   { stats, monthly, recentTransactions, loanSummary, alerts, portfolioHealth }
+ * plus the original flat headline fields (totalSavings, totalDisbursed, ...) so
+ * anything else already calling /dashboard/summary keeps working.
+ *
+ * Model facts this file relies on:
+ *   - Transaction.type:   deposit | withdrawal | loan_repayment | loan_disbursement | interest_credit | reversal | adjustment
+ *   - Transaction.status: completed | pending | reversed | failed
+ *       (only "completed" rows count towards totals; a reversed original is excluded)
+ *   - Loan.status:        pending | approved | active | closed | rejected | defaulted | cancelled
+ *   - Loan.interestRate:  stored as a decimal (0.12 = 12%)
+ *   - Loan.dueDate:       DATEONLY ("YYYY-MM-DD")
+ *   - Loan.disbursedAt:   used for the monthly "disbursements" figures
  */
 
 const { Op, fn, col, literal, QueryTypes } = require("sequelize");
@@ -84,10 +98,152 @@ function getBuckets(period, year) {
   }));
 }
 
+// ─── Summary helpers (used by getSummary) ─────────────────────────────────────
+
+const MONTH_LABELS = [
+  "Jan","Feb","Mar","Apr","May","Jun",
+  "Jul","Aug","Sep","Oct","Nov","Dec",
+];
+
+// A loan due within this many days (and not yet overdue) is classed "At Risk".
+const AT_RISK_WINDOW_DAYS = 14;
+
+const pad      = (n) => String(n).padStart(2, "0");
+const toNumber = (v) => parseFloat(v) || 0;
+
+/** Date -> "YYYY-MM-DD" (local), for comparing against DATEONLY columns. */
+const dateOnly = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+/**
+ * Turns a Date or a "YYYY-MM-DD" string into a local Date.
+ * (new Date("2026-11-07") is UTC midnight and can shift the day in some timezones.)
+ */
+function toLocalDate(value) {
+  if (!value) return null;
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [y, m, d] = value.split("-").map(Number);
+    return new Date(y, m - 1, d);
+  }
+  const d = new Date(value);
+  return isNaN(d) ? null : d;
+}
+
+/** "personal_loan" -> "Personal Loan" */
+function prettify(code) {
+  if (!code) return "";
+  return String(code).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** "2026" -> 2026. Falls back to the current year for anything invalid. */
+function parseYear(period) {
+  const y = parseInt(period, 10);
+  return Number.isInteger(y) && y >= 2000 && y <= 2100 ? y : new Date().getFullYear();
+}
+
+/** "Oct 08, 09:20" */
+function formatDateTime(value) {
+  const d = toLocalDate(value);
+  if (!d) return "—";
+  return `${MONTH_LABELS[d.getMonth()]} ${pad(d.getDate())}, ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** "Nov 07, 2026" */
+function formatDate(value) {
+  const d = toLocalDate(value);
+  if (!d) return "—";
+  return `${MONTH_LABELS[d.getMonth()]} ${pad(d.getDate())}, ${d.getFullYear()}`;
+}
+
+/** Loan.interestRate is a decimal: 0.12 -> "12%", 0.125 -> "12.5%" */
+function formatRate(value) {
+  if (value === undefined || value === null || value === "") return "—";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  return `${parseFloat((n * 100).toFixed(2))}%`;
+}
+
+/** Change between two values as { change: 12.3, up: true }. */
+function pctChange(current, previous) {
+  if (!previous) return { change: 0, up: current >= 0 };
+  const raw = ((current - previous) / previous) * 100;
+  return { change: Math.round(Math.abs(raw) * 10) / 10, up: raw >= 0 };
+}
+
+const TX_TYPE_LABELS = {
+  deposit:           "Deposit",
+  withdrawal:        "Withdrawal",
+  loan_repayment:    "Repayment",
+  loan_disbursement: "Disbursement",
+  interest_credit:   "Interest",
+  reversal:          "Reversal",
+};
+
+function mapTransactionType(type) {
+  const key = String(type || "").toLowerCase();
+  return TX_TYPE_LABELS[key] || prettify(key) || "Deposit";
+}
+
+function mapTransactionStatus(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "pending" || s === "processing") return "Pending";
+  if (s === "reversed") return "Reversed";
+  if (["failed", "rejected", "cancelled", "canceled"].includes(s)) return "Failed";
+  return "Success"; // "completed"
+}
+
+/**
+ * Pending  = application not yet approved
+ * Overdue  = defaulted, or past its due date (a loan due today is not yet overdue)
+ * At Risk  = due within the next AT_RISK_WINDOW_DAYS days
+ * Current  = everything else
+ */
+function classifyLoan(loan, today) {
+  if (loan.status === "pending") return "Pending";
+  if (loan.status === "defaulted") return "Overdue";
+  const due = toLocalDate(loan.dueDate);
+  if (due) {
+    if (due < today) return "Overdue";
+    if (due - today <= AT_RISK_WINDOW_DAYS * 86400000) return "At Risk";
+  }
+  return "Current";
+}
+
+/** Net savings (completed deposits − completed withdrawals) from the start of time up to `date`. */
+async function netSavingsThrough(date) {
+  const where = { status: "completed", createdAt: { [Op.lte]: date } };
+  const [deposits, withdrawals] = await Promise.all([
+    Transaction.sum("amount", { where: { ...where, type: "deposit"    } }),
+    Transaction.sum("amount", { where: { ...where, type: "withdrawal" } }),
+  ]);
+  return (deposits || 0) - (withdrawals || 0);
+}
+
+/**
+ * Sums `field` for each of the 12 months between start and end (grouped on `dateField`).
+ * Returns an array of 12 numbers.
+ */
+async function monthlyTotals(Model, field, extraWhere, start, end, dateField = "createdAt") {
+  const rows = await Model.findAll({
+    attributes: [
+      [fn("MONTH", col(dateField)), "month"],
+      [fn("SUM", col(field)), "total"],
+    ],
+    where: { ...extraWhere, [dateField]: { [Op.between]: [start, end] } },
+    group: [fn("MONTH", col(dateField))],
+    raw:   true,
+  });
+
+  const totals = Array(12).fill(0);
+  rows.forEach((r) => {
+    totals[Number(r.month) - 1] = toNumber(r.total);
+  });
+  return totals;
+}
+
 // ─── 1. Summary KPIs ──────────────────────────────────────────────────────────
 
 /**
- * Returns the headline numbers shown on the dashboard cards:
+ * The original headline numbers (kept so existing callers don't break):
  *   totalSavings    — sum of all approved saving balances
  *   totalDisbursed  — total loan principal ever disbursed
  *   activeLoans     — count of loans with status "active"
@@ -96,7 +252,7 @@ function getBuckets(period, year) {
  *   totalMembers    — count of all members
  *   newMembersMonth — members who joined this calendar month
  */
-exports.getSummary = async () => {
+async function getHeadlineMetrics() {
   const now         = new Date();
   const monthStart  = new Date(now.getFullYear(), now.getMonth(), 1);
 
@@ -145,6 +301,261 @@ exports.getSummary = async () => {
     interestEarned:  interestEarned  || 0,
     totalMembers:    totalMembers    || 0,
     newMembersMonth: newMembersMonth || 0,
+  };
+}
+
+/**
+ * Everything the dashboard page needs for one year.
+ *
+ * @param {Object} options
+ * @param {string|number} options.period — the year, e.g. "2026"
+ *
+ * Notes on past years: savings and member counts are rebuilt "as of" the end of
+ * that year from transactions / join dates. Loan balances use today's balance for
+ * loans that existed by then, because balance history isn't stored.
+ */
+exports.getSummary = async ({ period } = {}) => {
+  const now         = new Date();
+  const year        = parseYear(period);
+  const currentYear = now.getFullYear();
+  const isCurrent   = year === currentYear;
+
+  const yearStart = new Date(year, 0, 1);
+  const yearEnd   = new Date(year, 11, 31, 23, 59, 59);
+  const prevStart = new Date(year - 1, 0, 1);
+  const prevEnd   = new Date(year - 1, 11, 31, 23, 59, 59);
+  const asOf      = isCurrent ? now : yearEnd;
+
+  // DATEONLY comparisons use plain "YYYY-MM-DD" strings
+  const today      = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const todayStr   = dateOnly(today);
+  const soonStr    = dateOnly(new Date(today.getTime() + AT_RISK_WINDOW_DAYS * 86400000));
+  const asOfStr    = dateOnly(asOf);
+  const prevEndStr = dateOnly(prevEnd);
+
+  // Current year stops at the current month; past years show all 12; future years show none.
+  const lastMonthIdx = year > currentYear ? -1 : isCurrent ? now.getMonth() : 11;
+
+  const openStatuses = { [Op.in]: ["active", "defaulted"] };
+  const bookWhere    = { status: openStatuses, createdAt: { [Op.lte]: asOf } };
+
+  // The loans table also lists applications still waiting for approval (current year only),
+  // so they can be edited from the dashboard. They are NOT part of the portfolio figures above.
+  const listWhere = {
+    status:    { [Op.in]: isCurrent ? ["pending", "active", "defaulted"] : ["active", "defaulted"] },
+    createdAt: { [Op.lte]: asOf },
+  };
+
+  const [
+    headline,
+    savingsNow,
+    savingsPrev,
+    portfolioNow,
+    portfolioPrev,
+    membersNow,
+    membersPrev,
+    interestNow,
+    interestPrev,
+    overdueNow,
+    overduePrev,
+    depositsByMonth,
+    disbursedByMonth,
+    repaymentsByMonth,
+    interestByMonth,
+    recentRows,
+    loanRows,
+    overdueBalance,
+    atRiskBalance,
+  ] = await Promise.all([
+    getHeadlineMetrics(),
+
+    // Savings: today's balance for the current year, otherwise net deposits up to year end
+    isCurrent
+      ? Saving.sum("balance", { where: { status: "active" } })
+      : netSavingsThrough(yearEnd),
+    netSavingsThrough(prevEnd),
+
+    // Loan portfolio = outstanding balance on open loans
+    Loan.sum("balance", { where: bookWhere }),
+    Loan.sum("balance", { where: { status: openStatuses, createdAt: { [Op.lte]: prevEnd } } }),
+
+    // Members who had joined by the end of the year / previous year
+    Member.count({ where: { createdAt: { [Op.lte]: yearEnd } } }),
+    Member.count({ where: { createdAt: { [Op.lte]: prevEnd } } }),
+
+    // Interest earned in the year / previous year
+    Interest.sum("amount", { where: { type: "earned", createdAt: { [Op.between]: [yearStart, yearEnd] } } }),
+    Interest.sum("amount", { where: { type: "earned", createdAt: { [Op.between]: [prevStart, prevEnd] } } }),
+
+    // Overdue open loans
+    Loan.count({ where: { ...bookWhere, dueDate: { [Op.lt]: asOfStr } } }),
+    Loan.count({ where: { status: openStatuses, createdAt: { [Op.lte]: prevEnd }, dueDate: { [Op.lt]: prevEndStr } } }),
+
+    // Monthly chart figures (completed transactions only)
+    monthlyTotals(Transaction, "amount",    { status: "completed", type: "deposit" },        yearStart, yearEnd),
+    monthlyTotals(Loan,        "principal", { status: { [Op.in]: ["active", "closed", "defaulted"] } }, yearStart, yearEnd, "disbursedAt"),
+    monthlyTotals(Transaction, "amount",    { status: "completed", type: "loan_repayment" }, yearStart, yearEnd),
+    monthlyTotals(Interest,    "amount",    { type: "earned" },                              yearStart, yearEnd),
+
+    // Latest 5 transactions in the year (every status, so reversals are visible)
+    Transaction.findAll({
+      where: { createdAt: { [Op.between]: [yearStart, yearEnd] } },
+      order: [["createdAt", "DESC"]],
+      limit: 5,
+      raw:   true,
+    }),
+
+    // 5 loans: pending applications first, then the earliest due dates
+    Loan.findAll({
+      where: listWhere,
+      order: [
+        [literal("CASE WHEN status = 'pending' THEN 0 ELSE 1 END"), "ASC"],
+        ["dueDate", "ASC"],
+      ],
+      limit: 5,
+      raw:   true,
+    }),
+
+    // Portfolio health: balance that is overdue / due soon
+    Loan.sum("balance", {
+      where: {
+        ...bookWhere,
+        [Op.or]: [{ status: "defaulted" }, { dueDate: { [Op.lt]: todayStr } }],
+      },
+    }),
+    Loan.sum("balance", {
+      where: {
+        ...bookWhere,
+        status:  "active",
+        dueDate: { [Op.gte]: todayStr, [Op.lte]: soonStr },
+      },
+    }),
+  ]);
+
+  // Member names (looked up separately so we don't depend on model associations)
+  const memberIds = [
+    ...new Set([...recentRows, ...loanRows].map((r) => r.memberId).filter(Boolean)),
+  ];
+  const members = memberIds.length
+    ? await Member.findAll({
+        where:      { id: { [Op.in]: memberIds } },
+        attributes: ["id", "firstName", "lastName"],
+        raw:        true,
+      })
+    : [];
+  const nameById = new Map(
+    members.map((m) => [m.id, `${m.firstName || ""} ${m.lastName || ""}`.trim() || "Unknown member"])
+  );
+  const nameOf = (id) => nameById.get(id) || "Unknown member";
+
+  // ── KPIs ──
+  const savings   = toNumber(savingsNow);
+  const portfolio = toNumber(portfolioNow);
+  const interest  = toNumber(interestNow);
+
+  const stats = {
+    totalSavings:  { value: Math.round(savings),   ...pctChange(savings,   toNumber(savingsPrev))   },
+    loanPortfolio: { value: Math.round(portfolio), ...pctChange(portfolio, toNumber(portfolioPrev)) },
+    activeMembers: { value: membersNow || 0,       ...pctChange(membersNow || 0, membersPrev || 0)  },
+    interestIncome:{ value: Math.round(interest),  ...pctChange(interest,  toNumber(interestPrev))  },
+    overdueLoans:  { value: overdueNow || 0,       ...pctChange(overdueNow || 0, overduePrev || 0)  },
+  };
+
+  // ── Monthly chart ──
+  const monthly = MONTH_LABELS.slice(0, lastMonthIdx + 1).map((month, i) => ({
+    month,
+    savings:    Math.round(depositsByMonth[i]),
+    loans:      Math.round(disbursedByMonth[i]),
+    repayments: Math.round(repaymentsByMonth[i]),
+    interest:   Math.round(interestByMonth[i]),
+  }));
+
+  // ── Transactions table ──
+  const recentTransactions = recentRows.map((t) => ({
+    id:        t.id,
+    memberId:  t.memberId,
+    reference: t.reference,
+    txType:    t.type,   // raw values, used by the dashboard to decide which actions to offer
+    txStatus:  t.status,
+    member:    nameOf(t.memberId),
+    type:      mapTransactionType(t.type),
+    amount:    toNumber(t.amount),
+    time:      formatDateTime(t.createdAt),
+    status:    mapTransactionStatus(t.status),
+  }));
+
+  // ── Loans table ──
+  const loanSummary = loanRows.map((l) => ({
+    id:          l.id,
+    memberId:    l.memberId,
+    reference:   l.reference,
+    loanStatus:  l.status,                      // raw status: pending / active / defaulted
+    member:      nameOf(l.memberId),
+    type:        prettify(l.loanType) || "Loan",
+    principal:   toNumber(l.principal),
+    outstanding: l.status === "pending" ? toNumber(l.principal) : toNumber(l.balance),
+    rate:        formatRate(l.interestRate),
+    rateDecimal: toNumber(l.interestRate),      // e.g. 0.12, used to pre-fill the edit form
+    termMonths:  l.termMonths,
+    purpose:     l.purpose || "",
+    nextDue:     l.dueDate ? formatDate(l.dueDate) : "—",
+    status:      classifyLoan(l, today),
+  }));
+
+  // ── Portfolio health (by outstanding balance) ──
+  let portfolioHealth = [];
+  if (portfolio > 0) {
+    const overduePct = Math.min(100, Math.round((toNumber(overdueBalance) / portfolio) * 100));
+    const atRiskPct  = Math.min(100 - overduePct, Math.round((toNumber(atRiskBalance) / portfolio) * 100));
+    const currentPct = Math.max(0, 100 - overduePct - atRiskPct);
+    portfolioHealth = [
+      { label: "Current", pct: currentPct, color: "#34d399" },
+      { label: "At Risk", pct: atRiskPct,  color: "#f59e0b" },
+      { label: "Overdue", pct: overduePct, color: "#f87171" },
+    ];
+  }
+
+  // ── Alerts ──
+  const stamp  = formatDateTime(now);
+  const alerts = [];
+
+  if (stats.overdueLoans.value > 0) {
+    const n = stats.overdueLoans.value;
+    alerts.push({
+      type:    "warning",
+      message: isCurrent
+        ? `${n} loan ${n === 1 ? "account is" : "accounts are"} past due and need follow-up.`
+        : `${n} loan ${n === 1 ? "account was" : "accounts were"} past due by the end of ${year}.`,
+      time: stamp,
+    });
+  }
+
+  if (isCurrent && headline.pendingLoans > 0) {
+    const n = headline.pendingLoans;
+    alerts.push({
+      type:    "info",
+      message: `${n} loan ${n === 1 ? "application is" : "applications are"} awaiting approval.`,
+      time:    stamp,
+    });
+  }
+
+  if (stats.totalSavings.up && stats.totalSavings.change > 0) {
+    alerts.push({
+      type:    "success",
+      message: `Total savings grew ${stats.totalSavings.change}% compared with the end of ${year - 1}.`,
+      time:    stamp,
+    });
+  }
+
+  return {
+    year,
+    stats,
+    monthly,
+    recentTransactions,
+    loanSummary,
+    alerts,
+    portfolioHealth,
+    ...headline, // original flat fields, kept for backward compatibility
   };
 };
 
@@ -362,12 +773,14 @@ exports.getRecentTransactions = async ({ limit = 10, type = "all" } = {}) => {
     where.type = type;
   }
 
+  // Transaction.belongsTo(Member) is declared with `as: "member"`, so the include must use it.
   const transactions = await Transaction.findAll({
     where,
     order:   [["createdAt", "DESC"]],
     limit:   Math.min(Number(limit), 50),
     include: [{
       model:      Member,
+      as:         "member",
       attributes: ["id", "firstName", "lastName", "memberNumber"],
     }],
   });
@@ -380,11 +793,9 @@ exports.getRecentTransactions = async ({ limit = 10, type = "all" } = {}) => {
     description:  t.description,
     createdAt:    t.createdAt,
     member: {
-      id:           t.Member?.id,
-      name:         `${t.Member?.firstName} ${t.Member?.lastName}`,
-      memberNumber: t.Member?.memberNumber,
+      id:           t.member?.id,
+      name:         `${t.member?.firstName} ${t.member?.lastName}`,
+      memberNumber: t.member?.memberNumber,
     },
   }));
 };
-
-

@@ -1,20 +1,28 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Default Theme (Forces Dark Gray Appearance Globals) */
+  --background: #121214;
+  /* Main panel / body backdrop deep gray */
+  --sidebar-bg: #1a1a1e;
+  /* Distinct elevated sidebar dark gray */
+  --foreground: #ededed;
+  /* Clean silver-white text contrast */
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-sidebar: var(--sidebar-bg);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
+/* Kept for system sync, but defaults are already safely set to dark gray above */
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
+    --background: #121214;
+    --sidebar-bg: #1a1a1e;
     --foreground: #ededed;
   }
 }
