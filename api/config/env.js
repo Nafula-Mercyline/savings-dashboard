@@ -73,7 +73,7 @@ const env = {
 
   // ── Database ──────────────────────────────────────────────────────────────
   db: {
-    host:     process.env.DB_HOST     || "localhost",
+    host:     process.env.DB_HOST     || "savings-db-nafulamercyline2002-a4e1.j.aivencloud.com",
     port:     parseInt(process.env.DB_PORT, 10) || 3306,
     name:     process.env.DB_NAME,
     user:     process.env.DB_USER,

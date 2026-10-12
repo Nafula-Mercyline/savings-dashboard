@@ -1,3 +1,4 @@
+
 /**
  * api/config/db.js
  *
@@ -21,7 +22,42 @@
  */
 
 const { Sequelize } = require("sequelize");
-const env           = require("./env");
+const env = require("./env");
+
+// ─── Dialect-specific options (single, merged block) ─────────────────────────
+// NOTE: dialectOptions must only be defined ONCE. A second key with the same
+// name silently overrides the first, which previously dropped the SSL config.
+
+const isMySQL = env.db.dialect === "mysql" || env.db.dialect === "mariadb";
+
+// Aiven requires SSL. Set DB_SSL=false in .env only for a local, non-SSL DB.
+const useSSL = process.env.DB_SSL !== "false";
+
+const dialectOptions = {};
+
+if (isMySQL) {
+  // Allows reading BIGINT as JavaScript Number (not string)
+  dialectOptions.supportBigNumbers = true;
+  dialectOptions.bigNumberStrings = false;
+  // Enables proper timezone handling
+  dialectOptions.dateStrings = false;
+  // Give the TLS handshake enough time on slow networks
+  dialectOptions.connectTimeout = 60000;
+  dialectOptions.typeCast = function (field, next) {
+    if (field.type === "DATETIME" || field.type === "TIMESTAMP") {
+      const value = field.string();
+      return value === null ? null : new Date(value);
+    }
+    return next();
+  };
+}
+
+if (useSSL) {
+  dialectOptions.ssl = {
+    require: true,
+    rejectUnauthorized: false,
+  };
+}
 
 // ─── Create Sequelize Instance ────────────────────────────────────────────────
 
@@ -30,75 +66,42 @@ const sequelize = new Sequelize(
   env.db.user,
   env.db.pass,
   {
-    host:    env.db.host,
-    port:    env.db.port,
+    host: env.db.host,
+    port: env.db.port,
     dialect: env.db.dialect,
 
+    dialectOptions,
+
     // ── Connection Pool ───────────────────────────────────────────────────
-    // Keeps a pool of reusable DB connections instead of opening a new one
-    // per query — critical for performance under load.
     pool: {
-      max:     env.db.pool.max,     // maximum simultaneous connections
-      min:     env.db.pool.min,     // minimum idle connections kept open
-      acquire: env.db.pool.acquire, // ms to wait before throwing "connection timeout"
-      idle:    env.db.pool.idle,    // ms a connection can sit idle before release
+      max: env.db.pool.max,
+      min: env.db.pool.min,
+      acquire: env.db.pool.acquire,
+      idle: env.db.pool.idle,
     },
 
     // ── Logging ───────────────────────────────────────────────────────────
-    // Only log SQL queries when DB_LOGGING=true in .env.
-    // In production this should always be false.
     logging: env.db.logging
       ? (sql, timing) => {
-          console.log(`\n[SQL] ${sql}${timing ? ` — ${timing}ms` : ""}`);
-        }
+        console.log(`\n[SQL] ${sql}${timing ? ` — ${timing}ms` : ""}`);
+      }
       : false,
-
-    // ── Dialect-specific Options ──────────────────────────────────────────
-    dialectOptions: env.db.dialect === "mysql" || env.db.dialect === "mariadb"
-      ? {
-          // Allows reading BIGINT as JavaScript Number (not string)
-          supportBigNumbers: true,
-          bigNumberStrings:  false,
-          // Enables proper timezone handling
-          dateStrings: false,
-          typeCast(field, next) {
-            if (field.type === "DATETIME" || field.type === "TIMESTAMP") {
-              return new Date(field.string());
-            }
-            return next();
-          },
-        }
-      : {},
 
     // ── Global Model Options ──────────────────────────────────────────────
     define: {
-      // Use snake_case column names in the DB (firstName → first_name)
-      underscored:    false,
-      // Auto-add createdAt and updatedAt timestamps to every model
-      timestamps:     true,
-      // Don't pluralise table names (Member → Members by default — disable this)
+      underscored: false,
+      timestamps: true,
       freezeTableName: false,
-      // Use paranoid soft-deletes where applicable (adds deletedAt)
-      // Set paranoid: true on individual models that need soft-delete
-      paranoid:       false,
+      paranoid: false,
     },
 
     // ── Timezone ──────────────────────────────────────────────────────────
-    // Store all timestamps in UTC
     timezone: "+00:00",
   }
 );
 
 // ─── Connection Test ──────────────────────────────────────────────────────────
 
-/**
- * Tests the database connection and logs the result.
- * Called from server.js before starting the HTTP server.
- *
- * Usage:
- *   const db = require("./config/db");
- *   await db.authenticate();
- */
 const originalAuthenticate = sequelize.authenticate.bind(sequelize);
 sequelize.authenticate = async function () {
   try {
@@ -122,15 +125,11 @@ sequelize.authenticate = async function () {
  *   "alter" — ALTER TABLE to match model (dev only, non-destructive)
  *   "force" — DROP + CREATE (destructive — wipes all data, dev only)
  *
- * Usage in server.js:
- *   await db.syncModels("alter");  // development
- *   await db.syncModels("safe");   // production
- *
  * @param {"safe"|"alter"|"force"} mode — default "safe"
  */
 sequelize.syncModels = async function (mode = "safe") {
   const options = {
-    safe:  {},
+    safe: {},
     alter: { alter: true },
     force: { force: true },
   };
@@ -150,23 +149,3 @@ sequelize.syncModels = async function (mode = "safe") {
 // ─── Export ───────────────────────────────────────────────────────────────────
 
 module.exports = sequelize;
-
-
-// ─── .env template ───────────────────────────────────────────────────────────
-//
-// Copy the block below into your .env file and fill in your values:
-//
-// # Database
-// DB_HOST=localhost
-// DB_PORT=3306
-// DB_NAME=umojasave_db
-// DB_USER=root
-// DB_PASS=yourpassword
-// DB_DIALECT=mysql
-// DB_LOGGING=false
-// DB_POOL_MAX=10
-// DB_POOL_MIN=2
-// DB_POOL_ACQUIRE=30000
-// DB_POOL_IDLE=10000
-
-
