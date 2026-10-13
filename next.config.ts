@@ -1,12 +1,12 @@
-import type { NextConfig } from 'next';
+import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  allowedDevOrigins: ['decorated-cough-external.ngrok-free.dev'],
   async rewrites() {
+    const backend = process.env.BACKEND_URL || "http://localhost:5000";
     return [
       {
-        source: '/api/:path*',
-        destination: 'http://localhost:5000/api/:path*',
+        source: "/api/:path*",
+        destination: `${backend}/api/:path*`,
       },
     ];
   },
