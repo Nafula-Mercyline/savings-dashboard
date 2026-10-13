@@ -14,16 +14,16 @@ const path = require("path");
 const env = require("./api/config/env");
 
 const app = express();
-app.set('etag', false);
+app.set("etag", false);
 
-// ─── Core Middleware ───────────────────────────────────────────────────────────
+// --- Core Middleware ---
 app.use(helmet());
-app.use(cors({ origin: '*' }));
+app.use(cors({ origin: "*" }));
 app.use(morgan("dev"));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ─── Health Check ─────────────────────────────────────────────────────────────
+// --- Health Check ---
 app.get("/api/health", (req, res) => {
   res.json({
     success: true,
@@ -34,9 +34,10 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// ─── Route Loader ─────────────────────────────────────────────────────────────
+// --- Route Loader ---
 // Loads each route file from api/routes/
 // Skips gracefully if a file is missing instead of crashing
+// NOTE: file names are case-sensitive on Linux (Render)
 
 function loadRoute(routeName, mountPath) {
   const routePath = path.join(__dirname, "api", "routes", routeName);
@@ -45,12 +46,12 @@ function loadRoute(routeName, mountPath) {
     app.use(mountPath, require(routePath));
     console.log(`✅ Route loaded: ${mountPath}`);
   } else {
-    console.warn(`⚠️  Route missing: api/routes/${routeName}.js — skipping ${mountPath}`);
+    console.warn(`⚠️  Route missing: api/routes/${routeName}.js - skipping ${mountPath}`);
   }
 }
 
-// ─── Register all routes ──────────────────────────────────────────────────────
-loadRoute("Dashboard", "/api/Dashboard");
+// --- Register all routes ---
+loadRoute("dashboard", "/api/dashboard");
 loadRoute("savings", "/api/savings");
 loadRoute("loans", "/api/loans");
 loadRoute("interest", "/api/interest");
@@ -60,7 +61,7 @@ loadRoute("reports", "/api/reports");
 loadRoute("settings", "/api/settings");
 loadRoute("auth", "/api/auth");
 
-// ─── 404 Handler ──────────────────────────────────────────────────────────────
+// --- 404 Handler ---
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -68,7 +69,7 @@ app.use((req, res) => {
   });
 });
 
-// ─── Global Error Handler ─────────────────────────────────────────────────────
+// --- Global Error Handler ---
 // Must have 4 parameters for Express to treat it as an error handler
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
