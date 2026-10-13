@@ -34,6 +34,28 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+// --- Keep-alive (stops Render's free plan from sleeping the backend) ---
+// Render sets RENDER_EXTERNAL_URL automatically (your public backend address).
+// The ping must go to the PUBLIC address, because only outside traffic
+// counts as activity. Render sleeps free services after ~15 minutes of
+// no traffic, so we ping every 10 minutes.
+const KEEP_ALIVE_URL = process.env.RENDER_EXTERNAL_URL;
+const KEEP_ALIVE_MS = 10 * 60 * 1000;
+
+if (KEEP_ALIVE_URL && typeof fetch === "function") {
+  const timer = setInterval(async () => {
+    try {
+      const res = await fetch(`${KEEP_ALIVE_URL}/api/health`);
+      console.log(`🔁 Keep-alive ping → ${res.status}`);
+    } catch (err) {
+      console.warn(`⚠️  Keep-alive ping failed: ${err.message}`);
+    }
+  }, KEEP_ALIVE_MS);
+
+  // Don't let the timer block a clean shutdown
+  timer.unref();
+}
+
 // --- Route Loader ---
 // Loads each route file from api/routes/
 // Skips gracefully if a file is missing instead of crashing
