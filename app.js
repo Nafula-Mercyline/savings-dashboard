@@ -1,7 +1,7 @@
 /**
  * app.js
  * Express application setup
- * All backend files live under api/
+ * All backend files live under backend/
  */
 
 const express = require("express");
@@ -11,7 +11,7 @@ const morgan = require("morgan");
 const fs = require("fs");
 const path = require("path");
 
-const env = require("./api/config/env");
+const env = require("./backend/config/env");
 
 const app = express();
 app.set("etag", false);
@@ -57,18 +57,18 @@ if (KEEP_ALIVE_URL && typeof fetch === "function") {
 }
 
 // --- Route Loader ---
-// Loads each route file from api/routes/
+// Loads each route file from backend/routes/
 // Skips gracefully if a file is missing instead of crashing
 // NOTE: file names are case-sensitive on Linux (Render)
 
 function loadRoute(routeName, mountPath) {
-  const routePath = path.join(__dirname, "api", "routes", routeName);
+  const routePath = path.join(__dirname, "backend", "routes", routeName);
 
   if (fs.existsSync(routePath + ".js")) {
     app.use(mountPath, require(routePath));
     console.log(`✅ Route loaded: ${mountPath}`);
   } else {
-    console.warn(`⚠️  Route missing: api/routes/${routeName}.js - skipping ${mountPath}`);
+    console.warn(`⚠️  Route missing: backend/routes/${routeName}.js - skipping ${mountPath}`);
   }
 }
 

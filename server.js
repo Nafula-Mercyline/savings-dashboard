@@ -3,23 +3,19 @@
  * Entry point for the Savings Dashboard API
  */
 
-require("./api/config/env");
+require("./backend/config/env");
 
 const app           = require("./app");
 const express       = require("express");
-const { sequelize } = require("./api/models");
-const Role          = require("./api/models/Role");
-const Setting       = require("./api/models/Setting");
-
-
+const { sequelize } = require("./backend/models");
+const Role          = require("./backend/models/Role");
+const Setting       = require("./backend/models/Setting");
 
 const PORT = process.env.PORT || 5000;
 const ENV  = process.env.NODE_ENV || "development";
 
 // Middleware configuration
 app.use(express.json());
-
-
 
 async function start() {
   try {
@@ -28,9 +24,9 @@ async function start() {
 
     // 2. Sync all models to the database safely
     if (ENV === "development") {
-      // Use a simple sync() without alter/force. 
+      // Use a simple sync() without alter/force.
       // This looks for missing tables, but won't alter existing indexes.
-      await sequelize.sync(); 
+      await sequelize.sync();
       console.log("🔄 Database structural integrity checked cleanly.");
     } else {
       await sequelize.sync();
