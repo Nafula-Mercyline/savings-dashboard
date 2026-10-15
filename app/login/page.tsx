@@ -35,10 +35,9 @@ export default function LoginPage() {
 
   const [mode, setMode] = useState<AuthMode>("login");
 
-  // Default email matches the admin account in the users table (role: admin),
-  // so the account that signs in already has the role needed to reach /settings.
-  // Password is left blank on purpose — never ship a real password pre-filled in source.
-  const [email, setEmail] = useState("admin@savings-sacco.ug");
+  // Both fields start empty on purpose: this page is public, so it must not
+  // show an account email or password to visitors.
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
   const [showPassword, setShowPassword] = useState(false);
@@ -162,8 +161,9 @@ export default function LoginPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
+                autoComplete="email"
                 className={inputCls}
-                placeholder="admin@savings-sacco.ug"
+                placeholder="Enter your registered email"
               />
             </div>
           </div>
@@ -189,6 +189,7 @@ export default function LoginPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required={mode === "login"}
+                  autoComplete="current-password"
                   className={`${inputCls} pr-10`}
                   placeholder="Enter your password"
                 />
@@ -240,3 +241,4 @@ export default function LoginPage() {
     </div>
   );
 }
+
