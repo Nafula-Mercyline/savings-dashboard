@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Users, PiggyBank, Wallet, CreditCard, Pencil, Plus, X, Download, Search, Phone, Calendar, CheckCircle, AlertTriangle } from "lucide-react";
+import { Users, PiggyBank, Wallet, CreditCard, Pencil, Plus, X, Download, Search, Phone, Calendar, CheckCircle, AlertTriangle, Trash2 } from "lucide-react";
 import {
+    STORAGE_KEY,
     computeDashboard,
     loadData,
     money,
@@ -24,6 +25,9 @@ const btnBase =
 const btnPrimary = `${btnBase} bg-amber-500 px-3.5 py-2 text-slate-950 hover:bg-amber-400`;
 const btnGhost = `${btnBase} border border-slate-700 bg-slate-900 px-3.5 py-2 text-slate-300 hover:bg-slate-800`;
 const iconBtn = "rounded-md p-1.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-200";
+const rowEditBtn = `${btnBase} border border-slate-700 bg-slate-900 px-2.5 py-1 text-[11px] text-slate-300 hover:bg-slate-800`;
+const rowDeleteBtn = `${btnBase} border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-[11px] text-rose-400 hover:bg-rose-500/20`;
+const btnDanger = `${btnBase} bg-rose-600 px-3.5 py-2 text-white hover:bg-rose-500`;
 const inputCls =
     "w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-600 focus:border-amber-500/60 focus:outline-none";
 const thCls = "px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500";
@@ -42,7 +46,7 @@ const initials = (name: string) =>
 const niceDate = (d: string | null) =>
     d ? new Date(d + "T00:00:00").toLocaleDateString("en-UG", { day: "numeric", month: "short", year: "numeric" }) : "–";
 
-type ModalState = { kind: "member"; id: string | null } | null;
+type ModalState = { kind: "member"; id: string | null } | { kind: "delete"; id: string } | null;
 type Filter = "all" | "owing" | "clear";
 
 /* ------------------------------------------------------------------ */
@@ -113,12 +117,14 @@ function MemberForm({
     names,
     onSave,
     onClose,
+    onDelete,
 }: {
     initial: Member | null;
     defaultOpening: number;
     names: string[];
     onSave: (m: Member) => void;
     onClose: () => void;
+    onDelete?: () => void;
 }) {
     const [name, setName] = useState(initial?.name ?? "");
     const [opening, setOpening] = useState(String(initial?.opening ?? defaultOpening));
@@ -152,7 +158,18 @@ function MemberForm({
             <Field label="Phone (optional)">
                 <input className={inputCls} value={phone} onChange={(e) => setPhone(e.target.value)} />
             </Field>
-            <FormActions onClose={onClose} error={err} label={initial ? "Save changes" : "Add member"} />
+            <FormActions
+                onClose={onClose}
+                error={err}
+                label={initial ? "Save changes" : "Add member"}
+                left={
+                    onDelete ? (
+                        <button type="button" onClick={onDelete} className={`${btnGhost} border-rose-500/40 text-rose-400 hover:bg-rose-500/10`}>
+                            <Trash2 size={13} /> Delete
+                        </button>
+                    ) : null
+                }
+            />
         </form>
     );
 }
@@ -191,6 +208,12 @@ export default function MembersPage() {
 
     useEffect(() => {
         setData(loadData());
+        // Pick up changes made in another browser tab.
+        const onStorage = (e: StorageEvent) => {
+            if (e.key === null || e.key === STORAGE_KEY) setData(loadData());
+        };
+        window.addEventListener("storage", onStorage);
+        return () => window.removeEventListener("storage", onStorage);
     }, []);
 
     useEffect(() => {
@@ -238,6 +261,42 @@ export default function MembersPage() {
     const T = dash.memberTotals;
     const owingCount = dash.members.filter((m) => (openLoans.get(m.id) ?? 0) > 0).length;
     const editing = modal?.kind === "member" && modal.id ? data.members.find((m) => m.id === modal.id) ?? null : null;
+
+    // What will be removed along with the member (so nothing is left without an owner)
+    const impactOf = (m: MemberRow | null) => {
+        if (!m) return { loans: 0, openLoans: 0 };
+        return { loans: data.loans.filter((l) => l.memberId === m.id).length, openLoans: openLoans.get(m.id) ?? 0 };
+    };
+
+    const removeMember = (id: string) => {
+        const m = dash.members.find((x) => x.id === id) ?? null;
+        if (!m) return;
+        const { [id]: _removed, ...savings } = data.savings;
+        commit(
+            {
+                ...data,
+                members: data.members.filter((x) => x.id !== id),
+                savings,
+                loans: data.loans.filter((l) => l.memberId !== id),
+            },
+            `${m.name} was deleted.`
+        );
+    };
+
+    // Opens an in-page confirm box (browsers can silently block window.confirm).
+    const confirmRemove = (m: MemberRow) => setModal({ kind: "delete", id: m.id });
+
+    const deleting = modal?.kind === "delete" ? dash.members.find((x) => x.id === modal.id) ?? null : null;
+    const deleteWarning = (() => {
+        if (!deleting) return "";
+        const impact = impactOf(deleting);
+        const extras: string[] = [];
+        if (deleting.shares > 0) extras.push(`${fmtShares(deleting.shares)} shares (UGX ${money(deleting.saved)} saved)`);
+        if (impact.loans > 0) {
+            extras.push(`${impact.loans} loan${impact.loans > 1 ? "s" : ""}${impact.openLoans > 0 ? ` (UGX ${money(deleting.owed)} still owed)` : ""}`);
+        }
+        return extras.length ? `This will also remove: ${extras.join(" and ")}.` : "";
+    })();
 
     const exportCsv = () => {
         const head = "Member,Phone,Date joined,Shares,Savings (UGX),Opening balance (UGX),Owed (UGX),Net position (UGX)\n";
@@ -391,9 +450,12 @@ export default function MembersPage() {
                                                 </td>
                                                 <td className="px-4 py-3 text-right font-mono font-bold text-slate-100">{money(m.net)}</td>
                                                 <td className="px-4 py-3">
-                                                    <div className="flex justify-end">
-                                                        <button className={iconBtn} aria-label={`Edit ${m.name}`} onClick={() => setModal({ kind: "member", id: m.id })}>
-                                                            <Pencil size={13} />
+                                                    <div className="flex justify-end gap-1.5">
+                                                        <button className={rowEditBtn} aria-label={`Edit ${m.name}`} onClick={() => setModal({ kind: "member", id: m.id })}>
+                                                            <Pencil size={12} /> Edit
+                                                        </button>
+                                                        <button className={rowDeleteBtn} aria-label={`Delete ${m.name}`} onClick={() => confirmRemove(m)}>
+                                                            <Trash2 size={12} /> Delete
                                                         </button>
                                                     </div>
                                                 </td>
@@ -430,7 +492,29 @@ export default function MembersPage() {
                         names={data.members.filter((m) => m.id !== editing?.id).map((m) => m.name)}
                         onClose={() => setModal(null)}
                         onSave={(m: Member) => commit(upsertMember(data, m), editing ? "Member updated." : "Member added.")}
+                        onDelete={
+                            editing
+                                ? () => {
+                                    const row = dash.members.find((x) => x.id === editing.id);
+                                    if (row) confirmRemove(row);
+                                }
+                                : undefined
+                        }
                     />
+                </Modal>
+            ) : null}
+            {deleting ? (
+                <Modal title="Delete member" onClose={() => setModal(null)}>
+                    <p className="text-sm font-semibold text-slate-200">Delete {deleting.name}? This can&apos;t be undone.</p>
+                    {deleteWarning ? <p className="mt-2 text-xs text-amber-400">{deleteWarning}</p> : null}
+                    <div className="mt-5 flex justify-end gap-2">
+                        <button type="button" className={btnGhost} onClick={() => setModal(null)}>
+                            Cancel
+                        </button>
+                        <button type="button" className={btnDanger} onClick={() => removeMember(deleting.id)}>
+                            <Trash2 size={13} /> Yes, delete
+                        </button>
+                    </div>
                 </Modal>
             ) : null}
         </div>

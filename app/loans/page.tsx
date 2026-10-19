@@ -3,8 +3,9 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
-import { CreditCard, AlertTriangle, CheckCircle, Wallet, Percent, Pencil, Plus, X, Download, Trash2, Search } from "lucide-react";
+import { CreditCard, AlertTriangle, CheckCircle, Wallet, Percent, Pencil, Plus, X, Download, Trash2, Search, Users } from "lucide-react";
 import {
+  STORAGE_KEY,
   addRepayment,
   computeDashboard,
   cycleYears,
@@ -40,13 +41,14 @@ const iconBtn = "rounded-md p-1.5 text-slate-500 transition-colors hover:bg-slat
 const inputCls =
   "w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-600 focus:border-amber-500/60 focus:outline-none";
 const thCls = "px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500";
+const linkBtn = "mt-1 text-[10px] font-semibold text-amber-400 hover:text-amber-300";
 
 const axisFmt = (n: number) =>
   n >= 1_000_000 ? `${+(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${Math.round(n / 1_000)}K` : String(n);
 const ratePct = (r: number) => `${+(r * 100).toFixed(2)}%`;
 const num = (s: string) => (s.trim() === "" ? 0 : Number(s.replace(/,/g, "")));
 
-type ModalState = { kind: "loan"; id: string | null } | { kind: "repay"; id: string } | null;
+type ModalState = { kind: "loan"; id: string | null; memberId?: string } | { kind: "repay"; id: string } | null;
 type Filter = "all" | "open" | "paid";
 
 /* ------------------------------------------------------------------ */
@@ -111,8 +113,16 @@ function FormActions({ onClose, error, label = "Save", left }: { onClose: () => 
   );
 }
 
+/*
+ * Interest rule used by the group (checked against the existing loans):
+ *   interest = amount lent x monthly rate x number of months
+ *   total to repay = amount lent + interest
+ * The form works both out by itself. Either can still be typed in by hand
+ * (for loans that were agreed on different terms), and "Use automatic" switches back.
+ */
 function LoanForm({
   initial,
+  presetMemberId,
   members,
   monthOptions,
   onSave,
@@ -120,45 +130,58 @@ function LoanForm({
   onClose,
 }: {
   initial: Loan | null;
+  presetMemberId?: string;
   members: Member[];
   monthOptions: string[];
   onSave: (l: Loan) => void;
   onDelete?: () => void;
   onClose: () => void;
 }) {
-  const [memberId, setMemberId] = useState(initial?.memberId ?? "");
+  // When editing, work out how many months the saved interest corresponds to.
+  const guessMonths = (() => {
+    if (!initial) return null;
+    const base = initial.principal * initial.rate;
+    if (base <= 0) return null;
+    const k = Math.round((initial.interest / base) * 100) / 100;
+    if (k <= 0) return null;
+    return Math.abs(initial.interest - Math.round(base * k)) <= 1 ? k : null;
+  })();
+
+  const [memberId, setMemberId] = useState(initial?.memberId ?? presetMemberId ?? "");
   const [month, setMonth] = useState(initial?.month ?? "");
   const [date, setDate] = useState(initial?.date ?? "");
   const [principal, setPrincipal] = useState(initial ? String(initial.principal) : "");
   const [rate, setRate] = useState(String(initial?.rate ?? 0.06));
+  const [months, setMonths] = useState(guessMonths ? String(guessMonths) : "1");
   const [interest, setInterest] = useState(initial ? String(initial.interest) : "");
+  const [interestManual, setInterestManual] = useState(!!initial && guessMonths === null);
   const [repayable, setRepayable] = useState(initial ? String(initial.repayable) : "");
-  const [repayableEdited, setRepayableEdited] = useState(!!initial);
+  const [repayableManual, setRepayableManual] = useState(!!initial && initial.repayable !== initial.principal + initial.interest);
   const [repaid, setRepaid] = useState(initial ? String(initial.repaid) : "0");
   const [err, setErr] = useState("");
 
-  const months = Array.from(new Set([...monthOptions, ...(month ? [month] : [])])).sort();
-  const p = num(principal);
-  const i = num(interest);
-  const owedNow = Math.max(0, num(repayable) - num(repaid));
+  const monthList = Array.from(new Set([...monthOptions, ...(month ? [month] : [])])).sort();
 
-  // "Total to repay" follows principal + interest until it is typed in by hand
-  const syncRepayable = (pr: string, int: string) => {
-    if (!repayableEdited) setRepayable(String(num(pr) + num(int)));
-  };
+  const p = num(principal);
+  const r = Number(rate);
+  const mo = num(months);
+  const autoInterest = p > 0 && mo > 0 ? Math.round(p * r * mo) : 0;
+  const interestVal = interestManual ? num(interest) : autoInterest;
+  const autoRepayable = Math.round(p + interestVal);
+  const repayableVal = repayableManual ? num(repayable) : autoRepayable;
+  const owedNow = Math.max(0, repayableVal - num(repaid));
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    const r = Number(rate);
-    const rep = num(repayable);
     const paid = num(repaid);
     if (!memberId) return setErr("Choose the member.");
     if (!Number.isFinite(p) || p <= 0) return setErr("Enter the amount lent.");
     if (![0.04, 0.06].includes(r)) return setErr("The rate must be 4% or 6%.");
-    if (!Number.isFinite(i) || i < 0) return setErr("Interest must be 0 or more.");
-    if (!Number.isFinite(rep) || rep < p) return setErr("Total to repay can't be less than the amount lent.");
+    if (!interestManual && (!Number.isFinite(mo) || mo <= 0)) return setErr("Enter how many months the loan runs for.");
+    if (!Number.isFinite(interestVal) || interestVal < 0) return setErr("Interest must be 0 or more.");
+    if (!Number.isFinite(repayableVal) || repayableVal < p) return setErr("Total to repay can't be less than the amount lent.");
     if (!Number.isFinite(paid) || paid < 0) return setErr("Amount repaid must be 0 or more.");
-    if (paid > rep) return setErr("Amount repaid can't be more than the total to repay.");
+    if (paid > repayableVal) return setErr("Amount repaid can't be more than the total to repay.");
     onSave({
       id: initial?.id ?? uid("l"),
       memberId,
@@ -166,8 +189,8 @@ function LoanForm({
       date: date || null,
       principal: Math.round(p),
       rate: r,
-      interest: Math.round(i),
-      repayable: Math.round(rep),
+      interest: Math.round(interestVal),
+      repayable: Math.round(repayableVal),
       repaid: Math.round(paid),
     });
   };
@@ -188,7 +211,7 @@ function LoanForm({
         <Field label="Loan month" hint={month ? undefined : "Needed for it to show under a year"}>
           <select className={inputCls} value={month} onChange={(e) => setMonth(e.target.value)}>
             <option value="">Not set</option>
-            {months.map((m) => (
+            {monthList.map((m) => (
               <option key={m} value={m}>
                 {monthLabel(m)}
               </option>
@@ -207,17 +230,9 @@ function LoanForm({
           />
         </Field>
       </div>
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-3 gap-3">
         <Field label="Amount lent (UGX)">
-          <input
-            className={inputCls}
-            inputMode="numeric"
-            value={principal}
-            onChange={(e) => {
-              setPrincipal(e.target.value);
-              syncRepayable(e.target.value, interest);
-            }}
-          />
+          <input className={inputCls} inputMode="numeric" value={principal} onChange={(e) => setPrincipal(e.target.value)} />
         </Field>
         <Field label="Monthly rate">
           <select className={inputCls} value={rate} onChange={(e) => setRate(e.target.value)}>
@@ -225,33 +240,50 @@ function LoanForm({
             <option value="0.06">6%</option>
           </select>
         </Field>
+        <Field label="Months">
+          <input className={inputCls} inputMode="decimal" value={months} onChange={(e) => setMonths(e.target.value)} />
+        </Field>
       </div>
       <div className="grid grid-cols-2 gap-3">
-        <Field
-          label="Total interest (UGX)"
-          hint={p > 0 ? `One month at ${ratePct(Number(rate))} = UGX ${money(p * Number(rate))}` : undefined}
-        >
-          <input
-            className={inputCls}
-            inputMode="numeric"
-            value={interest}
-            onChange={(e) => {
-              setInterest(e.target.value);
-              syncRepayable(principal, e.target.value);
-            }}
-          />
-        </Field>
-        <Field label="Total to repay (UGX)" hint="Lent amount + interest">
-          <input
-            className={inputCls}
-            inputMode="numeric"
-            value={repayable}
-            onChange={(e) => {
-              setRepayable(e.target.value);
-              setRepayableEdited(true);
-            }}
-          />
-        </Field>
+        <div>
+          <Field
+            label="Total interest (UGX)"
+            hint={interestManual ? "Typed in by hand" : p > 0 && mo > 0 ? `${money(p)} × ${ratePct(r)} × ${mo} month${mo === 1 ? "" : "s"}` : "Worked out from amount, rate and months"}
+          >
+            <input
+              className={inputCls}
+              inputMode="numeric"
+              value={interestManual ? interest : String(autoInterest)}
+              onChange={(e) => {
+                setInterest(e.target.value);
+                setInterestManual(true);
+              }}
+            />
+          </Field>
+          {interestManual ? (
+            <button type="button" className={linkBtn} onClick={() => setInterestManual(false)}>
+              Use automatic
+            </button>
+          ) : null}
+        </div>
+        <div>
+          <Field label="Total to repay (UGX)" hint={repayableManual ? "Typed in by hand" : "Lent amount + interest"}>
+            <input
+              className={inputCls}
+              inputMode="numeric"
+              value={repayableManual ? repayable : String(autoRepayable)}
+              onChange={(e) => {
+                setRepayable(e.target.value);
+                setRepayableManual(true);
+              }}
+            />
+          </Field>
+          {repayableManual ? (
+            <button type="button" className={linkBtn} onClick={() => setRepayableManual(false)}>
+              Use automatic
+            </button>
+          ) : null}
+        </div>
       </div>
       <Field label="Already repaid (UGX)">
         <input className={inputCls} inputMode="numeric" value={repaid} onChange={(e) => setRepaid(e.target.value)} />
@@ -358,6 +390,12 @@ export default function LoansPage() {
 
   useEffect(() => {
     setData(loadData());
+    // Pick up changes made in another browser tab (for example a member added on the Members page).
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === null || e.key === STORAGE_KEY) setData(loadData());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, []);
 
   useEffect(() => {
@@ -398,6 +436,10 @@ export default function LoansPage() {
   const totalRepaid = dash.loans.reduce((a, l) => a + l.repaid, 0);
   const paidOff = dash.loans.length - K.openLoans;
   const noMonth = dash.loans.filter((l) => !l.month).length;
+
+  // Members who have never been given a loan (so they have no row in the register yet)
+  const loanedIds = new Set(data.loans.map((l) => l.memberId));
+  const noLoanMembers = data.members.filter((m) => !loanedIds.has(m.id));
 
   const exportCsv = () => {
     const head = "Member,Month,Lent (UGX),Rate,Interest (UGX),To repay (UGX),Repaid (UGX),Still owed (UGX)\n";
@@ -452,9 +494,8 @@ export default function LoansPage() {
           <button
             key={y}
             onClick={() => setPeriod(y)}
-            className={`rounded-lg px-3 py-1.5 text-[11px] font-bold transition-colors ${
-              period === y ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"
-            }`}
+            className={`rounded-lg px-3 py-1.5 text-[11px] font-bold transition-colors ${period === y ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"
+              }`}
           >
             {y === "all" ? "All time" : y}
           </button>
@@ -537,9 +578,8 @@ export default function LoansPage() {
                   <button
                     key={f}
                     onClick={() => setFilter(f)}
-                    className={`rounded-lg px-3 py-1.5 text-[11px] font-bold ${
-                      filter === f ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"
-                    }`}
+                    className={`rounded-lg px-3 py-1.5 text-[11px] font-bold ${filter === f ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"
+                      }`}
                   >
                     {label}
                   </button>
@@ -631,11 +671,34 @@ export default function LoansPage() {
         </CardContent>
       </Card>
 
+      {/* Members who have not borrowed yet (new members show up here straight away) */}
+      {noLoanMembers.length > 0 ? (
+        <Card className="border-slate-900 bg-slate-900/40">
+          <CardHeader className="border-b border-slate-900/60 pb-4">
+            <CardTitle className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-slate-200">
+              <Users size={14} className="text-slate-500" /> Members without a loan
+            </CardTitle>
+            <p className="mt-0.5 text-xs text-slate-400">{noLoanMembers.length} members have not borrowed yet. A member shows in the register above once they have a loan.</p>
+          </CardHeader>
+          <CardContent className="flex flex-wrap gap-2 pt-5">
+            {noLoanMembers.map((m) => (
+              <div key={m.id} className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-950 py-1.5 pl-3 pr-1.5">
+                <span className="text-xs font-bold text-slate-200">{m.name}</span>
+                <button className={btnAdd} onClick={() => setModal({ kind: "loan", id: null, memberId: m.id })}>
+                  <Plus size={11} /> Give loan
+                </button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
+
       {/* Forms */}
       {modal?.kind === "loan" ? (
         <Modal title={editingLoan ? "Edit loan" : "New loan"} onClose={() => setModal(null)}>
           <LoanForm
             initial={editingLoan}
+            presetMemberId={modal.memberId}
             members={data.members}
             monthOptions={dash.monthOptions}
             onClose={() => setModal(null)}
@@ -643,10 +706,10 @@ export default function LoansPage() {
             onDelete={
               editingLoan
                 ? () => {
-                    if (window.confirm("Delete this loan? This can't be undone (except by restoring a backup).")) {
-                      commit(removeLoan(data, editingLoan.id), "Loan deleted.");
-                    }
+                  if (window.confirm("Delete this loan? This can't be undone (except by restoring a backup).")) {
+                    commit(removeLoan(data, editingLoan.id), "Loan deleted.");
                   }
+                }
                 : undefined
             }
           />

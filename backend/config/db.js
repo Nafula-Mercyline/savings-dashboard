@@ -43,6 +43,10 @@ if (isMySQL) {
   dialectOptions.dateStrings = false;
   // Give the TLS handshake enough time on slow networks
   dialectOptions.connectTimeout = 60000;
+  // Keep the TCP connection alive so the remote server / network does not
+  // silently close idle connections ("connection is in closed state").
+  dialectOptions.enableKeepAlive = true;
+  dialectOptions.keepAliveInitialDelay = 10000;
   dialectOptions.typeCast = function (field, next) {
     if (field.type === "DATETIME" || field.type === "TIMESTAMP") {
       const value = field.string();
@@ -73,11 +77,28 @@ const sequelize = new Sequelize(
     dialectOptions,
 
     // ── Connection Pool ───────────────────────────────────────────────────
+    // For a remote database: keep no idle minimum (so dead connections are not
+    // kept around), drop idle connections quickly, and wait long enough to
+    // open a new one on a slow network.
     pool: {
-      max: env.db.pool.max,
-      min: env.db.pool.min,
-      acquire: env.db.pool.acquire,
-      idle: env.db.pool.idle,
+      max: env.db.pool.max || 5,
+      min: 0,
+      acquire: Math.max(env.db.pool.acquire || 0, 60000),
+      idle: Math.min(env.db.pool.idle || 10000, 10000),
+      evict: 5000,
+    },
+
+    // ── Retry on dropped connections ──────────────────────────────────────
+    retry: {
+      max: 3,
+      match: [
+        /closed state/i,
+        /ECONNRESET/,
+        /ETIMEDOUT/,
+        /EPIPE/,
+        /PROTOCOL_CONNECTION_LOST/,
+        /SequelizeConnectionError/,
+      ],
     },
 
     // ── Logging ───────────────────────────────────────────────────────────

@@ -5,16 +5,17 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import { Percent, TrendingUp, CalendarDays, CreditCard, Pencil, Plus, X, Download, Trash2, CheckCircle, AlertTriangle, UserPlus } from "lucide-react";
 import {
+  STORAGE_KEY,
   computeDashboard,
   cycleYears,
   loadData,
   money,
   monthLabel,
-  monthRange,
   saveData,
   setMonthEntries,
   uid,
   upsertMember,
+  xlRound,
   type Dashboard,
   type Member,
   type SaccoData,
@@ -36,6 +37,8 @@ const btnPrimary = `${btnBase} bg-amber-500 px-3.5 py-2 text-slate-950 hover:bg-
 const btnGhost = `${btnBase} border border-slate-700 bg-slate-900 px-3.5 py-2 text-slate-300 hover:bg-slate-800`;
 const btnAdd = `${btnBase} border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-400 hover:bg-amber-500/20`;
 const iconBtn = "rounded-md p-1.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-200";
+const rowEditBtn = `${btnBase} border border-slate-700 bg-slate-900 px-2.5 py-1 text-[11px] text-slate-300 hover:bg-slate-800`;
+const rowDeleteBtn = `${btnBase} border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-[11px] text-rose-400 hover:bg-rose-500/20`;
 const inputCls =
   "w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-600 focus:border-amber-500/60 focus:outline-none";
 const thCls = "px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500";
@@ -274,14 +277,25 @@ function MemberSharesForm({
           <p className="mt-1 font-mono font-bold text-slate-200">{money(totalShares * data.settings.shareValue)}</p>
         </div>
         <div>
-          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Interest share (UGX)</p>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Interest share, all time (UGX)</p>
           <p className="mt-1 font-mono font-bold text-emerald-400">{preview ? money(preview.interest) : "–"}</p>
         </div>
       </div>
       <p className="text-[10px] text-slate-500">
         Interest is shared by shares held, so changing shares changes this member's interest (and slightly everyone else's). To change the interest the group collected, use Record interest.
       </p>
-      <FormActions onClose={onClose} error={err} label={initial ? "Save changes" : "Add member"} />
+      <FormActions
+        onClose={onClose}
+        error={err}
+        label={initial ? "Save changes" : "Add member"}
+        left={
+          initial ? (
+            <button type="button" className={`${btnGhost} border-rose-500/40 text-rose-400 hover:bg-rose-500/10`} onClick={() => setEntries({})}>
+              <Trash2 size={12} /> Clear all shares
+            </button>
+          ) : undefined
+        }
+      />
     </form>
   );
 }
@@ -336,6 +350,12 @@ export default function InterestPage() {
 
   useEffect(() => {
     setData(loadData());
+    // Pick up changes made in another browser tab.
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === null || e.key === STORAGE_KEY) setData(loadData());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, []);
 
   useEffect(() => {
@@ -367,6 +387,12 @@ export default function InterestPage() {
     commit(setMonthEntries(data, month, shares, amount), message);
   };
 
+  // Remove every share recorded for one member (the member stays in the group).
+  const clearShares = (id: string, name: string, shares: number) => {
+    if (!window.confirm(`Delete all ${fmtShares(shares)} shares recorded for ${name}? Their interest share will drop to 0. The member stays in the group.`)) return;
+    commit({ ...data, savings: { ...data.savings, [id]: {} } }, `Shares deleted for ${name}.`);
+  };
+
   const years = ["all", ...cycleYears(data)];
   const today = new Date().toLocaleDateString("en-UG", { day: "numeric", month: "long", year: "numeric" });
   const T = dash.memberTotals;
@@ -379,11 +405,20 @@ export default function InterestPage() {
   for (const l of dash.loans) byRate.set(l.rate, (byRate.get(l.rate) ?? 0) + l.interest);
   const rateRows = Array.from(byRate.entries()).sort((a, b) => a[0] - b[0]);
 
-  const memberRows = [...dash.members].sort((a, b) => b.interest - a.interest);
+  // Each member's share of the interest collected in the CHOSEN period
+  // (same rule as the workbook: month by month, by shares held, rounded each month).
+  const periodMonths = Object.entries(data.interest).filter(([m, v]) => v > 0 && (period === "all" || m.startsWith(period)));
+  const shareOfInterest = (shares: number) =>
+    T.shares > 0 ? periodMonths.reduce((a, [, c]) => a + xlRound((shares / T.shares) * c), 0) : 0;
+  const memberRows = dash.members
+    .map((m) => ({ ...m, periodInterest: shareOfInterest(m.shares) }))
+    .sort((a, b) => b.periodInterest - a.periodInterest);
+  const memberInterestTotal = memberRows.reduce((a, m) => a + m.periodInterest, 0);
+  const periodName = period === "all" ? "all time" : period;
 
   const exportCsv = () => {
-    const head = "Member,Shares,Interest share (UGX)\n";
-    const body = memberRows.map((m) => `"${m.name.replace(/"/g, '""')}",${m.shares},${m.interest}`).join("\n");
+    const head = `Member,Shares,Interest share ${periodName} (UGX)\n`;
+    const body = memberRows.map((m) => `"${m.name.replace(/"/g, '""')}",${m.shares},${m.periodInterest}`).join("\n");
     const months = "\n\nMonth,Interest collected (UGX)\n" + dash.chart.map((p) => `${p.label},${p.interest}`).join("\n");
     const link = document.createElement("a");
     link.href = URL.createObjectURL(new Blob([head + body + months], { type: "text/csv;charset=utf-8;" }));
@@ -560,8 +595,8 @@ export default function InterestPage() {
         {/* Each member's share */}
         <Card className="overflow-hidden border-slate-900 bg-slate-900/40">
           <CardHeader className="border-b border-slate-900/60 pb-4">
-            <CardTitle className="text-sm font-bold uppercase tracking-wider text-slate-200">Each member's share</CardTitle>
-            <p className="mt-0.5 text-xs text-slate-400">Worked out from the shares each member holds. Use the pencil to change a member's shares.</p>
+            <CardTitle className="text-sm font-bold uppercase tracking-wider text-slate-200">Each member's share · {periodName}</CardTitle>
+            <p className="mt-0.5 text-xs text-slate-400">Worked out from the shares each member holds, for the period selected above. Edit changes a member's shares month by month; Delete removes all of their shares.</p>
           </CardHeader>
           <CardContent className="p-0">
             <div className="max-h-[420px] overflow-auto">
@@ -579,11 +614,21 @@ export default function InterestPage() {
                     <tr key={m.id} className="hover:bg-slate-900/60">
                       <td className="px-4 py-2.5 font-bold text-slate-200">{m.name}</td>
                       <td className="px-4 py-2.5 text-right font-mono text-slate-400">{fmtShares(m.shares)}</td>
-                      <td className="px-4 py-2.5 text-right font-mono font-bold text-emerald-400">{money(m.interest)}</td>
-                      <td className="px-4 py-2.5 text-right">
-                        <button className={iconBtn} aria-label={`Edit ${m.name}`} onClick={() => setModal({ kind: "member", id: m.id })}>
-                          <Pencil size={13} />
-                        </button>
+                      <td className="px-4 py-2.5 text-right font-mono font-bold text-emerald-400">{money(m.periodInterest)}</td>
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button className={rowEditBtn} aria-label={`Edit shares for ${m.name}`} onClick={() => setModal({ kind: "member", id: m.id })}>
+                            <Pencil size={12} /> Edit
+                          </button>
+                          <button
+                            className={rowDeleteBtn}
+                            aria-label={`Delete shares for ${m.name}`}
+                            disabled={m.shares === 0}
+                            onClick={() => clearShares(m.id, m.name, m.shares)}
+                          >
+                            <Trash2 size={12} /> Delete
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -592,7 +637,7 @@ export default function InterestPage() {
                   <tr className="border-t border-slate-800 font-bold">
                     <td className="px-4 py-2.5 text-slate-300">Total</td>
                     <td className="px-4 py-2.5 text-right font-mono text-slate-300">{fmtShares(T.shares)}</td>
-                    <td className="px-4 py-2.5 text-right font-mono text-emerald-400">{money(T.interest)}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-emerald-400">{money(memberInterestTotal)}</td>
                     <td />
                   </tr>
                 </tfoot>

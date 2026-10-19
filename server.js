@@ -5,17 +5,43 @@
 
 require("./backend/config/env");
 
-const app           = require("./app");
-const express       = require("express");
+const app = require("./app");
+const express = require("express");
 const { sequelize } = require("./backend/models");
-const Role          = require("./backend/models/Role");
-const Setting       = require("./backend/models/Setting");
+const Role = require("./backend/models/Role");
+const Setting = require("./backend/models/Setting");
 
 const PORT = process.env.PORT || 5000;
-const ENV  = process.env.NODE_ENV || "development";
+const ENV = process.env.NODE_ENV || "development";
 
 // Middleware configuration
 app.use(express.json());
+
+/**
+ * Seeding runs hundreds of small transactions. Over a remote database (Aiven)
+ * that is slow and can drop the connection, so it only runs when:
+ *   - the roles table is empty (first run), or
+ *   - RUN_SEED=true is set in .env (to force a re-seed).
+ * A seeding failure is reported but does NOT stop the server.
+ */
+async function seedIfNeeded() {
+  try {
+    const force = process.env.RUN_SEED === "true";
+    const roleCount = await Role.count();
+
+    if (force || roleCount === 0) {
+      console.log("🌱 Seeding roles and permissions...");
+      await Role.seedAll();
+    } else {
+      console.log(`⏭️  Roles already seeded (${roleCount}) - skipping seed`);
+    }
+
+    await Setting.seed();
+  } catch (err) {
+    console.error("⚠️  Seeding failed, continuing without it:", err.message);
+    console.error("    (Existing data is untouched. Set RUN_SEED=true in .env to retry.)");
+  }
+}
 
 async function start() {
   try {
@@ -23,22 +49,14 @@ async function start() {
     await sequelize.authenticate();
 
     // 2. Sync all models to the database safely
-    if (ENV === "development") {
-      // Use a simple sync() without alter/force.
-      // This looks for missing tables, but won't alter existing indexes.
-      await sequelize.sync();
-      console.log("🔄 Database structural integrity checked cleanly.");
-    } else {
-      await sequelize.sync();
-    }
+    // A simple sync() looks for missing tables but won't alter existing ones.
+    await sequelize.sync();
+    console.log("🔄 Database structural integrity checked cleanly.");
 
-    // 3. Seed operational components
-    await Role.seedAll();
+    // 3. Seed roles, permissions and default settings (only when needed)
+    await seedIfNeeded();
 
-    // 4. Seed default settings
-    await Setting.seed();
-
-    // 5. Start HTTP server bind
+    // 4. Start HTTP server bind
     app.listen(PORT, () => {
       console.log(`\n🚀 SACCO Backend running → http://localhost:${PORT}`);
       console.log(`📦 Environment         → ${ENV}`);
