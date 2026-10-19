@@ -25,8 +25,8 @@ const btnBase =
 const btnPrimary = `${btnBase} bg-amber-500 px-3.5 py-2 text-slate-950 hover:bg-amber-400`;
 const btnGhost = `${btnBase} border border-slate-700 bg-slate-900 px-3.5 py-2 text-slate-300 hover:bg-slate-800`;
 const iconBtn = "rounded-md p-1.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-200";
-const rowEditBtn = `${btnBase} border border-slate-700 bg-slate-900 px-2.5 py-1 text-[11px] text-slate-300 hover:bg-slate-800`;
-const rowDeleteBtn = `${btnBase} border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-[11px] text-rose-400 hover:bg-rose-500/20`;
+const rowEditBtn = `${btnBase} border border-slate-700 bg-slate-900 p-2 text-slate-300 hover:bg-slate-800`;
+const rowDeleteBtn = `${btnBase} border border-rose-500/30 bg-rose-500/10 p-2 text-rose-400 hover:bg-rose-500/20`;
 const btnDanger = `${btnBase} bg-rose-600 px-3.5 py-2 text-white hover:bg-rose-500`;
 const inputCls =
     "w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-600 focus:border-amber-500/60 focus:outline-none";
@@ -451,11 +451,11 @@ export default function MembersPage() {
                                                 <td className="px-4 py-3 text-right font-mono font-bold text-slate-100">{money(m.net)}</td>
                                                 <td className="px-4 py-3">
                                                     <div className="flex justify-end gap-1.5">
-                                                        <button className={rowEditBtn} aria-label={`Edit ${m.name}`} onClick={() => setModal({ kind: "member", id: m.id })}>
-                                                            <Pencil size={12} /> Edit
+                                                        <button className={rowEditBtn} title="Edit member" aria-label={`Edit ${m.name}`} onClick={() => setModal({ kind: "member", id: m.id })}>
+                                                            <Pencil size={14} />
                                                         </button>
-                                                        <button className={rowDeleteBtn} aria-label={`Delete ${m.name}`} onClick={() => confirmRemove(m)}>
-                                                            <Trash2 size={12} /> Delete
+                                                        <button className={rowDeleteBtn} title="Delete member" aria-label={`Delete ${m.name}`} onClick={() => confirmRemove(m)}>
+                                                            <Trash2 size={14} />
                                                         </button>
                                                     </div>
                                                 </td>

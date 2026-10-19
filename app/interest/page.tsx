@@ -37,8 +37,8 @@ const btnPrimary = `${btnBase} bg-amber-500 px-3.5 py-2 text-slate-950 hover:bg-
 const btnGhost = `${btnBase} border border-slate-700 bg-slate-900 px-3.5 py-2 text-slate-300 hover:bg-slate-800`;
 const btnAdd = `${btnBase} border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] text-amber-400 hover:bg-amber-500/20`;
 const iconBtn = "rounded-md p-1.5 text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-200";
-const rowEditBtn = `${btnBase} border border-slate-700 bg-slate-900 px-2.5 py-1 text-[11px] text-slate-300 hover:bg-slate-800`;
-const rowDeleteBtn = `${btnBase} border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-[11px] text-rose-400 hover:bg-rose-500/20`;
+const rowEditBtn = `${btnBase} border border-slate-700 bg-slate-900 p-2 text-slate-300 hover:bg-slate-800`;
+const rowDeleteBtn = `${btnBase} border border-rose-500/30 bg-rose-500/10 p-2 text-rose-400 hover:bg-rose-500/20`;
 const inputCls =
   "w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-600 focus:border-amber-500/60 focus:outline-none";
 const thCls = "px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500";
@@ -596,7 +596,7 @@ export default function InterestPage() {
         <Card className="overflow-hidden border-slate-900 bg-slate-900/40">
           <CardHeader className="border-b border-slate-900/60 pb-4">
             <CardTitle className="text-sm font-bold uppercase tracking-wider text-slate-200">Each member's share · {periodName}</CardTitle>
-            <p className="mt-0.5 text-xs text-slate-400">Worked out from the shares each member holds, for the period selected above. Edit changes a member's shares month by month; Delete removes all of their shares.</p>
+            <p className="mt-0.5 text-xs text-slate-400">Worked out from the shares each member holds, for the period selected above. The pencil changes a member's shares month by month; the bin removes all of their shares.</p>
           </CardHeader>
           <CardContent className="p-0">
             <div className="max-h-[420px] overflow-auto">
@@ -617,16 +617,17 @@ export default function InterestPage() {
                       <td className="px-4 py-2.5 text-right font-mono font-bold text-emerald-400">{money(m.periodInterest)}</td>
                       <td className="px-4 py-2.5">
                         <div className="flex items-center justify-end gap-1.5">
-                          <button className={rowEditBtn} aria-label={`Edit shares for ${m.name}`} onClick={() => setModal({ kind: "member", id: m.id })}>
-                            <Pencil size={12} /> Edit
+                          <button className={rowEditBtn} title="Edit shares" aria-label={`Edit shares for ${m.name}`} onClick={() => setModal({ kind: "member", id: m.id })}>
+                            <Pencil size={14} />
                           </button>
                           <button
                             className={rowDeleteBtn}
+                            title="Delete shares"
                             aria-label={`Delete shares for ${m.name}`}
                             disabled={m.shares === 0}
                             onClick={() => clearShares(m.id, m.name, m.shares)}
                           >
-                            <Trash2 size={12} /> Delete
+                            <Trash2 size={14} />
                           </button>
                         </div>
                       </td>
